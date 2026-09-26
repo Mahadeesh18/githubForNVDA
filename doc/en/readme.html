@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>github for NVDA</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 20px;
+            color: #333;
+        }
+        h1, h2, h3 {
+            color: #2c3e50;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        .section {
+            margin: 20px 0;
+        }
+        .keyboard {
+            background-color: #ecf0f1;
+            padding: 10px;
+            border-left: 4px solid #3498db;
+            margin: 10px 0;
+        }
+        .warning {
+            background-color: #fff3cd;
+            padding: 10px;
+            border-left: 4px solid #ffc107;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #d4edda;
+            padding: 10px;
+            border-left: 4px solid #28a745;
+            margin: 10px 0;
+        }
+        ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        li {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>github for NVDA</h1>
+    
+    <div class="section">
+        <h2>Overview</h2>
+        <p>
+            github for NVDA is an accessible add-on for NonVisual Desktop Access (NVDA)
+            that provides a comprehensive interface for managing your GitHub account. 
+            It allows you to view and edit your profile, manage your repositories, and explore public repositories on GitHub.
+        </p>
+    </div>
+
+    <div class="section">
+        <h2>Version Information</h2>
+        <ul>
+            <li><strong>Add-on Version:</strong> 1.0</li>
+            <li><strong>NVDA Minimum Version:</strong> 2024.1</li>
+            <li><strong>Last Tested With:</strong> NVDA 2026.2</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>Key Features</h2>
+        
+        <h3>1. Profile Management</h3>
+        <ul>
+            <li>View comprehensive GitHub profile details</li>
+            <li>Edit profile fields (name, location, bio)</li>
+            <li>Copy profile information to clipboard</li>
+            <li>View follower/following statistics</li>
+        </ul>
+
+        <h3>2. Repository Management</h3>
+        <ul>
+            <li>List all your repositories (up to 100)</li>
+            <li>Sort by name (A-Z or Z-A) or last commit date</li>
+            <li>Real-time search and filtering</li>
+            <li>Fully accessible interface for screen readers</li>
+        </ul>
+
+        <h3>3. Public Repository Explorer</h3>
+        <ul>
+            <li>Search across all public repositories on GitHub</li>
+            <li>Browse search results instantly</li>
+            <li>Fully accessible search experience</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>Getting Started</h2>
+        
+        <h3>Installation</h3>
+        <ol>
+            <li>Download the github for NVDA addon file</li>
+            <li>Open the file with NVDA or press Enter on it</li>
+            <li>Click "Install" in the dialog that appears</li>
+            <li>Restart NVDA for the add-on to become active</li>
+        </ol>
+
+        <h3>First Time Use</h3>
+        <p>When you first open GitHub Manager, you'll be prompted for a GitHub Personal Access Token:</p>
+        <ol>
+            <li>Go to <strong>github.com/settings/tokens</strong></li>
+            <li>Click <strong>"Generate new token (classic)"</strong></li>
+            <li>Name it something like "NVDA GitHub Manager"</li>
+            <li>Select scopes: <code>user</code>, <code>repo</code>, <code>gist</code></li>
+            <li>Click <strong>"Generate token"</strong></li>
+            <li>Copy the token (you won't see it again!)</li>
+            <li>Paste it into the NVDA dialog when prompted</li>
+        </ol>
+
+        <div class="warning">
+            <strong>⚠️ Important:</strong> Keep your token secret! Never share it or commit it to version control.
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>How to Use</h2>
+        
+        <h3>Opening GitHub Manager</h3>
+        <div class="keyboard">
+            <strong>Press:</strong> <code>NVDA + Shift + G</code>
+        </div>
+
+        <h3>Main Menu Options</h3>
+        <ol>
+            <li><strong>Set or Edit Personal Access Token:</strong> Add or update your GitHub authentication token</li>
+            <li><strong>My Profile:</strong> View and edit your GitHub profile information</li>
+            <li><strong>My Repositories:</strong> Browse, sort, and search through your repositories</li>
+            <li><strong>Explore Public Repositories:</strong> Search for repositories across all of GitHub</li>
+            <li><strong>About & User Guide:</strong> View this help documentation</li>
+            <li><strong>Close:</strong> Exit the add-on</li>
+        </ol>
+
+        <h3>Navigation Tips</h3>
+        <div class="keyboard">
+            <strong>Keyboard Controls:</strong>
+            <ul>
+                <li><strong>Tab:</strong> Move between buttons and fields</li>
+                <li><strong>Enter/Space:</strong> Activate buttons</li>
+                <li><strong>Arrow Keys:</strong> Navigate lists and combo boxes</li>
+                <li><strong>Escape:</strong> Close dialogs and return to previous menu</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Features in Detail</h2>
+
+        <h3>My Profile View</h3>
+        <p>View your complete GitHub profile including:</p>
+        <ul>
+            <li>Username and account type</li>
+            <li>Name, bio, and location</li>
+            <li>Public and private repository counts</li>
+            <li>Public and private gist counts</li>
+            <li>Number of starred repositories</li>
+            <li>Follower and following counts</li>
+            <li>GitHub plan type (free, pro, etc.)</li>
+            <li>Account creation date</li>
+        </ul>
+        <p>Edit any of these fields by selecting the "Edit [Field]" button that appears next to editable fields.</p>
+
+        <h3>My Repositories</h3>
+        <p>Manage your repositories with:</p>
+        <ul>
+            <li><strong>Sort Options:</strong> Choose from A-Z, Z-A, or by last commit date</li>
+            <li><strong>Search Box:</strong> Type to filter repositories in real-time</li>
+            <li><strong>Repository List:</strong> Navigate with arrow keys, press Enter for details</li>
+        </ul>
+
+        <h3>Explore Public Repositories</h3>
+        <p>Search GitHub's public repositories:</p>
+        <ol>
+            <li>Type your search query (e.g., "python machine learning")</li>
+            <li>Press Tab or click the "Search" button</li>
+            <li>Results will appear in the list below</li>
+            <li>Navigate with arrow keys to browse results</li>
+        </ol>
+    </div>
+
+    <div class="section">
+        <h2>Troubleshooting</h2>
+
+        <h3>API Error Messages</h3>
+        <ul>
+            <li><strong>"Error 401":</strong> Invalid or expired token. Generate a new one on GitHub</li>
+            <li><strong>"Error 403":</strong> Token lacks required permissions. Regenerate with correct scopes</li>
+            <li><strong>"Timeout":</strong> Internet connection issue. Check your connection and try again</li>
+            <li><strong>"Search failed":</strong> Invalid search query. Try simpler search terms</li>
+        </ul>
+
+        <h3>Add-on Not Responding</h3>
+        <p>If the add-on freezes:</p>
+        <ol>
+            <li>Press <code>Escape</code> to close the current dialog</li>
+            <li>Try opening GitHub Manager again</li>
+            <li>If it still doesn't work, restart NVDA</li>
+        </ol>
+
+        <h3>Token Not Saving</h3>
+        <ul>
+            <li>Ensure NVDA has permission to write to its config directory</li>
+            <li>Try disabling and re-enabling the add-on</li>
+            <li>Check that your token is valid by testing it on GitHub.com</li>
+        </ul>
+
+        <div class="warning">
+            <strong>Network Issues?</strong> This add-on requires an active internet connection to communicate with GitHub's API.
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>What's New in Version 1.0</h2>
+        <div class="success">
+            <ul>
+                <li>✓ Fixed critical daemon thread handling bug</li>
+                <li>✓ Fixed URL encoding in search queries</li>
+                <li>✓ Improved error messages and user feedback</li>
+                <li>✓ Enhanced documentation and keyboard shortcuts</li>
+                <li>✓ Full NVDA screen reader compatibility</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Privacy & Security</h2>
+        <ul>
+            <li>Your token is stored locally in NVDA's config directory (encrypted)</li>
+            <li>All communication with GitHub is via HTTPS (encrypted)</li>
+            <li>This add-on does not collect or transmit any data beyond GitHub's API</li>
+            <li>Read GitHub's privacy policy: <code>https://github.com/privacy</code></li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>License</h2>
+        <p>This add-on is released under the GPL 2.0 license, consistent with NVDA's licensing.</p>
+    </div>
+
+    <div class="section">
+        <h2>System Requirements</h2>
+        <ul>
+            <li>NVDA 2024.1 or later</li>
+            <li>Windows operating system (currently)</li>
+            <li>Active internet connection</li>
+            <li>Valid GitHub account and personal access token</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>Support</h2>
+        <p>
+            For issues, bug reports, or feature requests, please visit the project repository on GitHub or contact the developer.
+        </p>
+    </div>
+
+    <hr>
+    <p style="font-size: 0.9em; color: #666;">
+        <strong>thank you for using github for NVDA v1.0</strong>
+    </p>
+</body>
+</html>
