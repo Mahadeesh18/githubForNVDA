@@ -1,6 +1,6 @@
-# GitHub for NVDA
+# githubForNVDA
 
-GitHub for NVDA is an accessible add-on designed for screen reader users who rely on NVDA. It seamlessly integrates GitHub into standard Windows controls, removing the dependency on the web interface.
+githubForNVDA is an accessible add-on designed for screen reader users who rely on NVDA. It seamlessly integrates GitHub into standard Windows controls, removing the dependency on the web interface.
 
 ## Compatibility
 - Requires NVDA 2024.1 or later.
