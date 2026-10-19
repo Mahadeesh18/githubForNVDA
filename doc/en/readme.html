@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitHub for NVDA: User Guide</title>
+<style>
+body { font-family: Segoe UI, Arial, sans-serif; line-height: 1.55; max-width: 52em; margin: 0 auto; padding: 1em 1.2em 3em; color: #1b1b1b; background: #fff; }
+h1, h2, h3 { line-height: 1.25; }
+h2 { margin-top: 2em; border-bottom: 1px solid #888; padding-bottom: .2em; }
+code { background: #eee; padding: 0 .25em; border-radius: 3px; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+caption { text-align: left; font-weight: bold; padding-bottom: .4em; }
+th, td { border: 1px solid #777; padding: .4em .6em; text-align: left; vertical-align: top; }
+th { background: #e8e8e8; }
+nav ul { columns: 2; }
+a { color: #0b4fb3; }
+@media (prefers-color-scheme: dark) {
+  body { background: #121212; color: #e8e8e8; }
+  code { background: #2a2a2a; }
+  th { background: #2a2a2a; }
+  th, td { border-color: #888; }
+  a { color: #8ab4ff; }
+}
+</style>
+</head>
+<body>
+<h1>GitHub for NVDA: User Guide</h1>
+<p>GitHub for NVDA lets you use GitHub with NVDA through ordinary, fully labelled Windows windows. Browse repositories and files, work with issues and pull requests, watch GitHub Actions, read notifications, manage gists and releases, and more, without needing the GitHub website.</p>
+<p>This add-on sets no keyboard shortcut of its own. Give the commands you want a key yourself in NVDA menu, Preferences, Input gestures, <em>GitHub for NVDA</em>. See <a href="#nokey">Commands and their shortcuts</a>.</p>
+<ul>
+<li>Requires NVDA 2024.1 or later (tested up to 2026.2, including 64-bit NVDA)</li>
+<li>Author: Mahadeesh</li>
+<li>License: GPL v2</li>
+</ul>
+
+<nav aria-label="Contents">
+<h2 id="contents">Contents</h2>
+<ul>
+<li><a href="#start">Getting started</a></li>
+<li><a href="#moving">Moving around and keyboard shortcuts</a></li>
+<li><a href="#nokey">Commands without a key</a></li>
+<li><a href="#settings">Settings</a></li>
+<li><a href="#menu">The main menu</a></li>
+<li><a href="#profile">My Profile</a></li>
+<li><a href="#ghsettings">GitHub Settings</a></li>
+<li><a href="#others">Other people's profiles</a></li>
+<li><a href="#explore">Explore GitHub</a></li>
+<li><a href="#browser">The repository browser</a></li>
+<li><a href="#files">Viewing and editing files</a></li>
+<li><a href="#issues">Issues and pull requests</a></li>
+<li><a href="#actions">GitHub Actions</a></li>
+<li><a href="#releases">Releases</a></li>
+<li><a href="#privacy">Privacy and safety</a></li>
+<li><a href="#trouble">Troubleshooting</a></li>
+<li><a href="#contact">Contact to Developer</a></li>
+<li><a href="#contributing">Contributing</a></li>
+</ul>
+</nav>
+
+<h2 id="start">Getting started</h2>
+<ol>
+<li>In NVDA menu, Preferences, Input gestures, <em>GitHub for NVDA</em>, give <strong>Opens the GitHub for NVDA main menu</strong> a key of your choice, then press that key to open the main menu.</li>
+<li>Open <code>github.com/settings/tokens</code> in your browser and sign in.</li>
+<li>On GitHub choose <em>Generate new token (classic)</em> and tick <code>repo</code>, <code>notifications</code>, <code>gist</code> and <code>workflow</code>. Also tick:
+<ul>
+<li><code>delete_repo</code> only if you want to delete repositories.</li>
+<li><code>user:email</code> only if you want to change email visibility.</li>
+<li><code>user</code> only if you want to edit your profile status, company, website or social media links, or use GitHub Settings (profile, blocked users, organization membership).</li>
+<li><code>write:public_key</code>, <code>write:gpg_key</code>, <code>admin:ssh_signing_key</code> and <code>codespace:secrets</code> only if you want to manage SSH keys, GPG keys, SSH signing keys and Codespaces secrets in GitHub Settings.</li>
+<li><code>read:org</code> if you want your private organization memberships to appear.</li>
+</ul></li>
+<li>Copy the token. Open NVDA menu, Preferences, Settings, <em>GitHub for NVDA</em> and paste it into <strong>Paste your personal access token</strong>. Press <strong>Test personal access token</strong> to check it with GitHub, then press OK to save it.</li>
+</ol>
+<p>The token field is protected, so the token is never read aloud, unless you tick <strong>Show personal access token</strong>. To remove your token, empty the field and press OK. The token is checked with GitHub and stored encrypted so that only your Windows account can read it. It is only ever sent to <code>api.github.com</code>.</p>
+<p>You can explore public repositories without a token, but GitHub then allows far fewer requests.</p>
+<p>You can open this guide again at any time with the <strong>User Guide in Browser</strong> button at the bottom of the main menu, or from the add-on's entry in NVDA's add-on manager.</p>
+
+<h2 id="moving">Moving around and keyboard shortcuts</h2>
+<ul>
+<li>Every window closes with <code>Escape</code>.</li>
+<li><code>Tab</code> moves between controls. <code>Alt</code> plus the underlined letter presses a button. The add-on makes sure these letters never clash inside a window.</li>
+<li>Long text opens in a read-only edit box that you can read with the arrow keys.</li>
+<li>Results and errors are spoken automatically.</li>
+</ul>
+<table>
+<caption>Keyboard shortcuts</caption>
+<thead><tr><th scope="col">Where</th><th scope="col">Key</th><th scope="col">What it does</th></tr></thead>
+<tbody>
+<tr><td>Any window</td><td><code>Escape</code></td><td>Closes the window</td></tr>
+<tr><td>Forms with a multi-line box</td><td><code>Control+Enter</code></td><td>Saves the form from anywhere in it</td></tr>
+<tr><td>Lists</td><td><code>Enter</code></td><td>Runs the first action, usually opening the item</td></tr>
+<tr><td>Lists</td><td><code>Applications</code> key</td><td>Opens a menu of every action</td></tr>
+<tr><td>Lists</td><td><code>F5</code></td><td>Refreshes</td></tr>
+<tr><td>Lists with a filter box</td><td><code>Control+F</code></td><td>Jumps to the filter box. Several words must all match.</td></tr>
+<tr><td>My Repositories</td><td><code>Delete</code></td><td>Deletes the repository after you type its name</td></tr>
+<tr><td>Repository browser</td><td><code>Enter</code>, <code>Delete</code>, <code>Backspace</code></td><td>Opens the folder or file, deletes the file (with write access), goes up one folder</td></tr>
+<tr><td>Repository browser</td><td><code>Control+F</code></td><td>Jumps to the Search box</td></tr>
+<tr><td>File viewer</td><td><code>Control+F</code>, <code>F3</code>, <code>Control+G</code>, <code>Control+S</code></td><td>Finds text, finds the next match, goes to a line, commits your changes</td></tr>
+</tbody>
+</table>
+
+<h2 id="nokey">Commands and their shortcuts</h2>
+<p>None of these commands has a key until you give it one. Users choose their own keys in NVDA menu, Preferences, Input gestures, <em>GitHub for NVDA</em>, so the add-on never clashes with other add-ons or with your own keys:</p>
+<ul>
+<li>Open the GitHub for NVDA main menu</li>
+<li>Announce how many unread notifications you have</li>
+<li>Check for new notifications now and say what is new</li>
+<li>Pause or resume the spoken announcements of new notifications</li>
+<li>Open your notifications</li>
+<li>Open My Work</li>
+<li>Open the GitHub link or <code>owner/repo</code> that is on the clipboard</li>
+</ul>
+
+<h2 id="settings">Settings</h2>
+<p>NVDA menu, Preferences, Settings, <em>GitHub for NVDA</em>:</p>
+<ul>
+<li>Paste your personal access token: the token field. It is the first control. Next to it are <strong>Show personal access token</strong>, which shows the token instead of hiding it, and <strong>Test personal access token</strong>, which asks GitHub whether the token works, and <strong>Create new personal access token</strong>, which opens GitHub's token page in your browser with the permissions this add-on needs already ticked. Empty the field and press OK to remove the token.</li>
+<li>Items shown on each page of a list (10 to 100)</li>
+<li>Background notification check: off, or every 15 or 30 seconds, every minute, or every 2, 5, 10, 15, 30 or 60 minutes. NVDA beeps and speaks when something new arrives. The 15 and 30 second choices are the fastest: they ask GitHub more often than its usual advice of once a minute, but a check that finds nothing new is answered with "not modified" and does not use up your API requests. You can ask it to say what the notifications are about.</li>
+<li>Background announcements filter: announce all new notifications, or only the ones that involve you directly (assigned to you, you were mentioned, review requested, your team was mentioned, you created it, approval requested, security alerts).</li>
+<li>Mark a notification as read when you open it</li>
+<li>Wrap long lines when viewing files</li>
+<li>Download folder</li>
+</ul>
+
+<h2 id="menu">The main menu</h2>
+<h3>Personal access token</h3>
+<p>The token is set in NVDA Settings, <em>GitHub for NVDA</em>, not in this menu. Everything except Explore GitHub, Open Link or Repository, Bookmarked Repositories and GitHub Status needs a token.</p>
+<h3>GitHub Settings</h3>
+<p>The account settings of github.com, in the order of GitHub's own settings sidebar. See <a href="#ghsettings">GitHub Settings</a>.</p>
+<h3>My Work</h3>
+<p>Shows what needs you across all of GitHub: items assigned to you, pull requests waiting for your review, your open pull requests and issues, items that mention you, and what you recently finished.</p>
+<h3>My Repositories</h3>
+<p>The Sort by box and the Search box are the first two stops, then the list. You can sort by name, recently updated, private, public, forks or archived, open, create (with an optional licence) and delete. Press <code>Enter</code> on a repository to open it and <code>Delete</code> to delete it (you are asked to type the repository name first). The <code>Applications</code> key opens a menu with:</p>
+<ul>
+<li>Open Repository, Rename, Edit Description, Edit Topics, Edit Website Address (with admin access) and Delete</li>
+<li>Open in Browser, View README, Edit README and Add or Remove Bookmark</li>
+<li>Star or Unstar, Fork Repository, Copy Clone URL, Copy Repository Link and Copy ZIP Link</li>
+<li>Change Default Branch, Make Public or Make Private (with admin access), Archive or Unarchive Repository and Download Repository</li>
+</ul>
+<h3>Explore GitHub</h3>
+<p>See <a href="#explore">Explore GitHub</a> below.</p>
+<h3>Open Link or Repository</h3>
+<p>Understands <code>owner/repo</code>, a user name, and links to repositories, folders, files, issues, pull requests, commits and workflow runs. If the clipboard holds a GitHub link it is filled in for you.</p>
+<h3>Notifications</h3>
+<p>Unread only, all, or only unread notifications that involve you directly (assigned, mentioned, review requested and so on). Copy Link puts the web address of the notification on the clipboard. View opens issues and pull requests directly and marks them read. Also mark as read, mark as done, mute a thread and mark everything as read.</p>
+<h3>Gists</h3>
+<p>List, view every file, create (filled from the clipboard, secret unless you tick public), edit single-file gists and delete.</p>
+<h3>Bookmarked Repositories</h3>
+<p>Bookmarks are saved on your computer and follow a repository when you rename it.</p>
+<h3>GitHub Status</h3>
+<p>Shows who you are signed in as and how many requests GitHub still allows.</p>
+
+<h2 id="profile">My Profile</h2>
+<p>The profile text lists your username, name, email (shown as public only when it is), bio, company, location, website, repository and gist counts, followers and following. After Following come five extra lines. Press <code>Tab</code> from the text to reach the matching buttons, in the same order.</p>
+<table>
+<caption>Profile lines and their buttons</caption>
+<thead><tr><th scope="col">Line in the text</th><th scope="col">Button</th><th scope="col">What it does</th></tr></thead>
+<tbody>
+<tr><td>Pinned Repositories: number</td><td>View Pinned Repositories</td><td>Lists them. Open, open in browser, bookmark or copy the link.</td></tr>
+<tr><td>(none)</td><td>View Contribution Graph</td><td>Opens a read-only text page: yearly total, days with contributions, busiest day, longest and current streak, totals by month and one line per week.</td></tr>
+<tr><td>Organizations: number</td><td>View Organizations</td><td>Lists your organizations. View a profile, view its repositories or open it in the browser.</td></tr>
+<tr><td>Achievements and Badges: number</td><td>View Achievements and Badges</td><td>Lists them. GitHub has no API for this, so the list is read from the public profile page (achievements with their level, plus Pro and Developer Program Member badges). If GitHub cannot be read, the reason is spoken, and Open in Browser always shows the full list.</td></tr>
+<tr><td>Status: your status</td><td>Edit Status</td><td>Message, emoji, busy checkbox and when to clear it. Leave message and emoji empty to clear your status.</td></tr>
+<tr><td>Social Media Links: number</td><td>View Social Media Links</td><td>Lists your links. Open in browser or copy the link.</td></tr>
+</tbody>
+</table>
+<p>The other buttons are:</p>
+<ul>
+<li><strong>Change Username</strong> checks that a name is free and then opens GitHub's settings, because GitHub only allows renaming on its website.</li>
+<li><strong>Edit Name</strong>, <strong>Edit Bio</strong>, <strong>Edit Company</strong>, <strong>Edit Location</strong> and <strong>Edit Website</strong> change those fields.</li>
+<li><strong>Edit Email</strong> shows whether your primary email address is public. Choose <strong>Make Public</strong> or <strong>Make Private</strong> to flip it, or <strong>Cancel</strong>. It needs the <code>user:email</code> permission. If your email shows as not public, use this button, or on GitHub open Settings, Emails and turn off "Keep my email addresses private", then pick a public email under Settings, Public profile.</li>
+<li><strong>Edit Social Media Links</strong> shows one web address per line (GitHub allows up to four). Remove a line to delete a link, add a line to add one.</li>
+<li><strong>Starred Repositories</strong>, <strong>Followers</strong> and <strong>Following</strong> open lists.</li>
+<li><strong>Copy Details</strong> copies the profile text and <strong>Copy Link</strong> copies your profile link.</li>
+</ul>
+<p>Editing the profile needs a token with the <code>user</code> permission. Pinned repositories, the contribution graph and the status use GitHub's GraphQL API and need a token.</p>
+
+<h2 id="ghsettings">GitHub Settings</h2>
+<p>Choose <strong>GitHub Settings</strong> in the main menu. Up and Down arrows move in the list, Enter opens an entry, Escape goes back. Lists have buttons for adding and deleting; each change asks you first when it cannot be undone.</p>
+<ul>
+<li><strong>Public Profile</strong>: name, bio, company, location, website, X (Twitter) username, which verified email is shown publicly, and Available for hire.</li>
+<li><strong>Account Overview and Plan</strong>: your plan, two-factor authentication on or off, disk space, private repository limits.</li>
+<li><strong>Email Addresses</strong>: add and delete addresses, make the primary address public or private.</li>
+<li><strong>SSH Keys</strong>, <strong>SSH Signing Keys</strong> and <strong>GPG Keys</strong>: list, add, copy and delete.</li>
+<li><strong>Organization Memberships</strong>: make your membership public or private, accept an invitation.</li>
+<li><strong>Repository Invitations</strong>: accept or decline.</li>
+<li><strong>Blocked Users</strong>: block and unblock people.</li>
+<li><strong>Temporary Interaction Limits</strong>: limit who can interact with your public repositories for 24 hours up to 6 months.</li>
+<li><strong>Followers</strong>, <strong>Following</strong> and <strong>Watched Repositories</strong> (with Unwatch).</li>
+<li><strong>Codespaces Secrets</strong>: see the names and delete them. Adding a secret needs encryption that NVDA does not have, so that opens GitHub.</li>
+<li><strong>API Limits</strong>: how many requests you have left.</li>
+<li><strong>More Settings on GitHub.com</strong>: everything GitHub only allows on its website (password, two-factor authentication, sessions, notifications, billing, appearance, developer settings and more). Enter opens the page in your browser.</li>
+</ul>
+<p>If GitHub says permission denied, your token is missing a permission: use <strong>Create new personal access token</strong> in NVDA Settings, <em>GitHub for NVDA</em>, which ticks all of them.</p>
+
+<h2 id="others">Other people's profiles</h2>
+<p>Open them from a search, a follower list, an organization or Open Link or Repository. They show the same lines as your own profile (pinned repositories, organizations, achievements and badges, status and social media links) with the same View buttons, plus their X (Twitter) username and whether they are available for hire when set. An email address appears only when the person made it public, otherwise "not public". Organizations show their description and do not have the View buttons. <strong>Follow</strong> or <strong>Unfollow</strong>, <strong>Repositories</strong>, <strong>Starred Repositories</strong> (the repositories that person has starred; the profile text also shows how many), <strong>Followers</strong>, <strong>Following</strong>, <strong>Copy Link</strong> and <strong>Open in Browser</strong> are also there.</p>
+
+<h2 id="explore">Explore GitHub</h2>
+<p>Search repositories, users and organizations, issues and pull requests, or code (code search needs a token). The window is laid out in this order, which is also the Tab order:</p>
+<ol>
+<li><strong>Search for</strong>: repositories, users and organizations, issues and pull requests, or code.</li>
+<li><strong>Sort by</strong>: always available and always enabled; its choices follow what you search for. Repositories: best match, most stars, most forks, recently updated. Users and organizations: best match, most followers, most repositories, recently joined. Issues and pull requests: recently updated, best match, most commented, most reactions, recently created. Code: best match only (GitHub cannot sort code results).</li>
+<li>The <strong>Search</strong> box. Press <code>Enter</code> in it to search.</li>
+<li>The <strong>Search</strong> button.</li>
+<li>The <strong>Results</strong> list. <code>Enter</code> opens the selected result.</li>
+<li><strong>Previous Page</strong>, <strong>Next Page</strong> and <strong>Close</strong>.</li>
+</ol>
+<p>Paste any GitHub link to jump straight to it. Searches are never saved: there is no search history, and any history file left by an older version is deleted when you open this window.</p>
+
+<h2 id="browser">The repository browser</h2>
+<p>The window has, in Tab order: the repository information, a <strong>Search</strong> box, the file list and the buttons.</p>
+<ul>
+<li>The <strong>Search</strong> box filters the files and folders of the folder you are in as you type. It announces the number of matches after you pause. Focus stays in the box until you press <code>Tab</code>, as in My Repositories.</li>
+<li><code>Enter</code> opens a folder or file, <code>Delete</code> deletes the selected file (with write access, after a confirmation and a commit message) and <code>Backspace</code> goes up one folder.</li>
+<li>Buttons: <strong>Go Up</strong>, <strong>Switch Branch</strong>, <strong>Commit History</strong>, <strong>Issues</strong>, <strong>Pull Requests</strong>, <strong>Actions</strong>, <strong>Releases</strong> and <strong>More Options</strong>.</li>
+<li><strong>More Options</strong> (with write access) has:
+<ul>
+<li><strong>Create New File</strong>: type the file name with its extension, such as <code>notes.txt</code>, <code>index.html</code> or <code>script.py</code>, to create any kind of text-based file. Use Upload Files for binary files such as images.</li>
+<li><strong>Create New Folder</strong>: adds a <code>.gitkeep</code> placeholder file, because Git cannot store empty folders.</li>
+<li><strong>Upload Files</strong> into the folder you are in, <strong>Create Branch</strong> and <strong>Delete Current Branch</strong>.</li>
+<li><strong>Upload Folder</strong>: choose a folder on your computer. It is uploaded with all its files and sub folders, keeping the structure, in a single commit. The <code>.git</code> folder and files over 50 MB are skipped, and files with the same name are replaced.</li>
+</ul></li>
+<li>Press the <code>Applications</code> key (or <code>Shift+F10</code>) on a file or folder in the list for a menu of that item:
+<ul>
+<li>On a <strong>folder</strong>: Open Folder, Open in Browser, Copy Folder Location, Copy GitHub Link, Download Folder as ZIP, Folder History and, with write access, <strong>Upload Folder to GitHub</strong> (into that folder), Upload Files to This Folder, Create New File or Folder in This Folder, Rename or Move, Duplicate and Delete Folder.</li>
+<li>On a <strong>file</strong>: Open File, Open in Browser, Copy File Location, Copy GitHub Link, Copy Raw URL, Copy File Content, Download File, File History, Properties and, with write access, Rename or Move, Duplicate, Delete, Upload Files and Upload Folder.</li>
+<li>Rename, move, duplicate and folder delete each make one commit.</li>
+</ul></li>
+<li>Star or Unstar, Make Public or Make Private, Edit Website Address and the copy links are on the <code>Applications</code> key menu in My Repositories.</li>
+</ul>
+
+<h2 id="files">Viewing and editing files</h2>
+<ul>
+<li><code>Control+F</code> finds text (not case sensitive), <code>F3</code> finds the next match, <code>Control+G</code> goes to a line, <code>Control+S</code> commits.</li>
+<li>Writers can edit UTF-8 text files. Other encodings open read only so they are never damaged.</li>
+<li>Closing with unsaved changes asks first, however you close the window.</li>
+<li><strong>File History</strong> shows the commits that changed the file.</li>
+</ul>
+
+<h2 id="issues">Issues and pull requests</h2>
+<p>Open one to read the description, comments, reviews, code comments and changed files as text. You can add comments, close or reopen (issues ask whether it was completed or not planned), submit a review (comment, approve or request changes) and merge by merge commit, squash or rebase. <strong>More Actions</strong> edits the title and description, labels and assignees, and locks or unlocks the conversation. <strong>New Pull Request</strong> is in the pull request list.</p>
+
+<h2 id="actions">GitHub Actions</h2>
+<p>Lists workflow runs for all branches or the current branch, filtered by status. Open a run to hear every job and step with its result, read the log, re-run all or only failed jobs, or cancel it.</p>
+
+<h2 id="releases">Releases</h2>
+<p>Read notes, download files with spoken progress, and with write access create or delete releases.</p>
+
+<h2 id="privacy">Privacy and safety</h2>
+<ul>
+<li>Your token is stored encrypted for your Windows account and only sent to <code>api.github.com</code>.</li>
+<li>Searches in Explore GitHub are not saved anywhere.</li>
+<li>Dangerous actions, such as deleting a repository, need a typed confirmation. Overwriting a file always asks first.</li>
+<li>Bookmarks and settings stay on your computer.</li>
+</ul>
+
+<h2 id="trouble">Troubleshooting</h2>
+<ul>
+<li><strong>Permission denied</strong>: the token lacks a permission. Create a new token with the permissions listed in Getting started.</li>
+<li><strong>Organization requires single sign-on</strong>: on GitHub's token page choose <em>Configure SSO</em> next to the token and authorize it.</li>
+<li><strong>NVDA says it cannot read your notifications</strong>: the token has no <code>notifications</code> permission, or GitHub rejected it. Create a new token as described in Getting started.</li>
+<li><strong>Rate limit reached</strong>: wait, or set a token. <strong>GitHub Status</strong> shows when the limit resets.</li>
+<li><strong>A profile line says unavailable</strong>: the token may lack a permission, or GitHub did not answer. Open the profile again. Achievements depend on GitHub's public page.</li>
+<li><strong>Updating from an old release</strong>: the add-on is now named <code>githubForNVDA</code>. Remove the old "github For NVDA" add-on once. Your token and bookmarks are kept.</li>
+</ul>
+
+<h2 id="contact">Contact to Developer</h2>
+<ul>
+<li>Email: <a href="mailto:Mahadeesh18@gmail.com">Mahadeesh18@gmail.com</a></li>
+<li>GitHub profile: <a href="https://github.com/Mahadeesh18">https://github.com/Mahadeesh18</a></li>
+</ul>
+
+<h2 id="contributing">Contributing</h2>
+<p>Source code, issues and translations: <a href="https://github.com/Mahadeesh18/githubForNVDA">https://github.com/Mahadeesh18/githubForNVDA</a>. Run <code>python build.py --pot</code> to refresh the translation template.</p>
+</body>
+</html>
