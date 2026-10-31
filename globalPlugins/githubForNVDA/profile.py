@@ -14,36 +14,32 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from logHandler import log
 
-from .logic import (
-	format_datetime,
-	last_page,
-)
 from .core import (
-	Result,
-	current_login,
-	forget_identity,
-	gh,
-	gh_paged,
-	has_token,
-	items_per_page,
-	open_url,
-)
-from .dialogs import (
 	AccessibleDialog,
-	FormDialog,
-	PAD,
-	PagedListDialog,
-	TextViewDialog,
 	apply_access_keys,
 	ask_form,
 	confirm,
 	copy_to_clipboard,
+	current_login,
+	forget_identity,
+	format_datetime,
+	FormDialog,
+	gh,
+	gh_paged,
+	has_token,
+	items_per_page,
+	last_page,
 	local_fetch,
 	make_label,
+	open_url,
+	PAD,
+	PagedListDialog,
 	prompt_text,
+	Result,
 	show_modal,
+	TextViewDialog,
 )
-from .repotools import (
+from .repos import (
 	q,
 	toggle_bookmark,
 )
@@ -1017,23 +1013,81 @@ def show_user_list(parent, username, kind, title):
 	def profile(dlg, u):
 		show_user(dlg, u["login"])
 
+	# Whether you follow each person shown so far: {login: True/False}. The Follow button turns into
+	# Unfollow (and back) to match the selected person.
+	states = {}
+
+	def is_following(login):
+		"""Blocking. True, False, or None for yourself or when GitHub could not say."""
+		key = login.lower()
+		if key in states:
+			return states[key]
+		if key == current_login().lower():
+			states[key] = None
+			return None
+		code = gh("GET", f"/user/following/{q(login)}").code
+		if code in (204, 404):
+			states[key] = code == 204
+		else:
+			return None
+		return states[key]
+
+	def follow_label(u):
+		if u is not None and states.get(u["login"].lower()):
+			return _("Un&follow")
+		return _("&Follow")
+
+	def on_select(dlg, u):
+		if not has_token() or u["login"].lower() in states:
+			return
+		login = u["login"]
+		dlg.run(lambda: is_following(login), lambda _result: dlg.refresh_actions())
+
 	def follow(dlg, u):
 		if not has_token():
 			ui.message(_("Set your token first to follow people."))
 			return
+		login = u["login"]
 
-		def done(res):
-			ui.message(_("Now following {name}.").format(name=u["login"]) if res.ok else _("Could not follow.") + " " + res.message)
+		def work():
+			current = is_following(login)
+			if current is None:
+				return Result(0, "", {}), None, login.lower() == current_login().lower()
+			res = gh("DELETE" if current else "PUT", f"/user/following/{q(login)}")
+			return res, current, False
 
-		dlg.run(lambda: gh("PUT", f"/user/following/{q(u['login'])}"), done)
+		def done(outcome):
+			if not isinstance(outcome, tuple):  # the background task itself failed
+				ui.message(_("That did not work.") + " " + outcome.message)
+				return
+			res, was_following, is_me = outcome
+			if was_following is None:
+				if is_me:
+					ui.message(_("That is your own account."))
+				else:
+					ui.message(_("Could not check whether you follow {name}.").format(name=login))
+				return
+			if res.ok:
+				states[login.lower()] = not was_following
+				ui.message(
+					_("Unfollowed {name}.").format(name=login) if was_following
+					else _("Now following {name}.").format(name=login)
+				)
+				dlg.refresh_actions()
+			else:
+				ui.message(_("That did not work.") + " " + res.message)
+
+		dlg.run(work, done)
 
 	actions = [
 		(_("View &Profile"), profile),
 		(_("&View Repositories"), repos),
-		(_("&Follow"), follow),
+		(follow_label, follow),
 		(_("Open in &Browser"), lambda d, u: open_url(u.get("html_url"))),
 	]
-	show_modal(PagedListDialog(parent, title, fetch, lambda u: u["login"], actions, empty=_("No users found.")))
+	show_modal(PagedListDialog(
+		parent, title, fetch, lambda u: u["login"], actions, empty=_("No users found."), on_select=on_select,
+	))
 
 
 class UserDialog(AccessibleDialog):
@@ -1043,6 +1097,8 @@ class UserDialog(AccessibleDialog):
 		super().__init__(parent, _("Profile: {name}").format(name=login), (600, 520))
 		self.login, self.user = login, {}
 		self.following = None
+		self.is_me = False
+		self._busy = False
 		self.starred = None
 		sizer = wx.BoxSizer(wx.VERTICAL)
 		sizer.Add(wx.StaticText(self, label=_("Profile &details:")), 0, wx.ALL, PAD)
@@ -1080,8 +1136,10 @@ class UserDialog(AccessibleDialog):
 				if stars.ok and isinstance(stars.data, list):
 					self.starred = last_page(stars.headers, len(stars.data))
 				if has_token():
-					code = gh("GET", f"/user/following/{q(self.login)}").code
-					self.following = (code == 204) if code in (204, 404) else None
+					self.is_me = current_login().lower() == self.login.lower()
+					if not self.is_me:
+						code = gh("GET", f"/user/following/{q(self.login)}").code
+						self.following = (code == 204) if code in (204, 404) else None
 			return res
 
 		def done(res):
@@ -1121,13 +1179,21 @@ class UserDialog(AccessibleDialog):
 		)
 
 	def on_follow(self, event):
-		method = "DELETE" if self.following else "PUT"
+		if self._busy or self.following is None:
+			return
+		self._busy = True
+		was_following = self.following
+		method = "DELETE" if was_following else "PUT"
 
 		def done(res):
+			self._busy = False
 			if res.ok:
-				self.following = not self.following
+				self.following = not was_following
 				self._set_follow_label()
-				ui.message(_("Now following {name}.") .format(name=self.login) if self.following else _("Unfollowed {name}.").format(name=self.login))
+				ui.message(
+					_("Now following {name}.").format(name=self.login) if self.following
+					else _("Unfollowed {name}.").format(name=self.login)
+				)
 			else:
 				ui.message(_("That did not work.") + " " + res.message)
 

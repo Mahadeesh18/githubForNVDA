@@ -3,73 +3,721 @@
 # This file is covered by the GNU General Public License, version 2.
 # See the file LICENSE for more details.
 
-"""Repositories: browser, file viewer, file and folder actions, repository actions, My Repositories and link opening."""
+"""Repository helpers: API calls for files and commits, downloads, bookmarks, commit history and releases."""
 
 import addonHandler
+import base64
+import json
+import mimetypes
 import os
 import re
+import time
 import ui
 import wx
 import zipfile
+from collections import namedtuple
+from logHandler import log
+from urllib.parse import quote
 
-from .logic import (
+from .core import (
+	AccessibleDialog,
+	apply_access_keys,
+	ask_choice,
+	ask_commit_message,
+	ask_form,
+	ask_yes_no,
 	clean_branch_name,
+	config_dir,
+	confirm,
+	confirm_typed,
+	copy_to_clipboard,
 	decode_text,
+	downloads_dir,
 	encode_text,
+	escape_label,
 	format_date,
 	format_size,
-	parse_github_link,
-	safe_filename,
-	split_names,
-	unique_path,
-)
-from .core import (
-	Result,
-	ask_yes_no,
-	downloads_dir,
 	get_pref,
 	gh,
 	gh_paged,
 	has_token,
-	items_per_page,
-	open_url,
-	run_async,
-	say,
-)
-from .dialogs import (
-	AccessibleDialog,
-	PAD,
-	TextViewDialog,
-	ask_choice,
-	ask_form,
-	confirm,
-	confirm_typed,
-	copy_to_clipboard,
-	escape_label,
 	inform,
+	items_per_page,
+	local_fetch,
+	open_url,
+	PAD,
+	PagedListDialog,
+	parse_github_link,
 	prompt_text,
+	Result,
+	run_async,
+	safe_filename,
+	say,
 	show_modal,
-)
-from .repotools import (
-	FileContext,
-	commit_file,
-	commit_tree,
-	content_url,
-	create_blob,
-	delete_file,
-	download_file,
-	find_sha,
-	is_bookmarked,
-	list_branches,
-	permissions,
-	q,
-	rename_bookmark,
-	resolve_ref_path,
-	toggle_bookmark,
-	tree_items,
+	split_names,
+	TextViewDialog,
+	truncate,
+	unique_path,
 )
 
 addonHandler.initTranslation()
+
+
+# ----------------------------------------------------------------------
+# repoapi.py: Repository helpers shared by the file viewer, repository browser and uploads.
+# ----------------------------------------------------------------------
+
+# What the file viewer needs to know about where a file lives.
+FileContext = namedtuple("FileContext", "full ref can_write")
+
+
+def q(text, safe=""):
+	"""Percent-encode part of a URL."""
+	return quote(str(text), safe=safe)
+
+
+def content_url(full, path):
+	return f"/repos/{full}/contents/{q(path, '/')}" if path else f"/repos/{full}/contents"
+
+
+def permissions(repo):
+	"""Return (can_write, can_admin) for a repository payload."""
+	perms = repo.get("permissions") or {}
+	archived = bool(repo.get("archived"))
+	can_admin = bool(perms.get("admin"))
+	can_write = bool(perms.get("push") or can_admin) and not archived
+	return can_write, can_admin
+
+
+def is_owner(repo):
+	"""True when you own the repository: your own repository, or an organization's you administer.
+
+	Only owners get the file-changing options (create, upload, rename, delete, branches). GitHub reports
+	admin rights only to the owner of a personal repository, and to the administrators of an
+	organization's repository, so no extra request is needed to find out.
+	"""
+	return bool((repo.get("permissions") or {}).get("admin"))
+
+
+def commit_file(full, path, ref, message, data_bytes, sha=None, retries=2):
+	"""Create or update a file. Retries when GitHub reports a concurrent commit."""
+	body = {"message": message, "content": base64.b64encode(data_bytes).decode("ascii")}
+	if ref:
+		body["branch"] = ref
+	if sha:
+		body["sha"] = sha
+	result = Result(0, "", {})
+	for attempt in range(retries + 1):
+		result = gh("PUT", content_url(full, path), body=body)
+		if result.code == 409 and attempt < retries:
+			time.sleep(1.0 + attempt)
+			continue
+		break
+	return result
+
+
+def delete_file(full, path, ref, message, sha):
+	body = {"message": message, "sha": sha}
+	if ref:
+		body["branch"] = ref
+	return gh("DELETE", content_url(full, path), body=body)
+
+
+def find_sha(full, path, ref):
+	"""Return (exists, sha, is_folder) for a path on a branch."""
+	res = gh("GET", content_url(full, path), params={"ref": ref} if ref else None)
+	if res.ok and isinstance(res.data, dict) and res.data.get("type") == "file":
+		return True, res.data.get("sha"), False
+	if res.ok and isinstance(res.data, list):
+		return False, None, True
+	return False, None, False
+
+
+def list_branches(full):
+	return gh_paged(f"/repos/{full}/branches", max_items=1000)
+
+
+def fetch_tree(full, ref):
+	"""Every file path in a branch, using one API call."""
+	return gh("GET", f"/repos/{full}/git/trees/{q(ref, '/')}", params={"recursive": "1"}, timeout=60)
+
+
+def resolve_ref_path(full, segments):
+	"""Work out which part of 'main/src/app.py' is the branch and which the path.
+
+	Branch names can contain slashes, so try the shortest branch first.
+	Returns (branch, path, contents payload) or None.
+	"""
+	segments = [s for s in segments if s]
+	for cut in range(1, min(len(segments), 4) + 1):
+		branch = "/".join(segments[:cut])
+		path = "/".join(segments[cut:])
+		res = gh("GET", content_url(full, path), params={"ref": branch})
+		if res.ok:
+			return branch, path, res.data
+	return None
+
+
+# ----------------------------------------------------------------------
+# Git data helpers: change many files in ONE commit
+# ----------------------------------------------------------------------
+
+def create_blob(full, data_bytes):
+	"""Store file content in the repository and return a Result whose data is the blob sha."""
+	if data_bytes:
+		body = {"content": base64.b64encode(data_bytes).decode("ascii"), "encoding": "base64"}
+	else:
+		body = {"content": "", "encoding": "utf-8"}
+	res = gh("POST", f"/repos/{full}/git/blobs", body=body, timeout=120, retries=1)
+	if res.ok and isinstance(res.data, dict):
+		return Result(res.code, res.data.get("sha"), res.headers)
+	return res
+
+
+def tree_items(full, ref, path):
+	"""Every file under a folder (or the one file) at `path`, taken from the branch's tree.
+
+	Returns a Result whose data is a list of tree entries (path, mode, type, sha, size).
+	"""
+	res = fetch_tree(full, ref)
+	if not res.ok or not isinstance(res.data, dict):
+		return res
+	if res.data.get("truncated"):
+		return Result(0, "This repository is too large to list in one request.", {})
+	prefix = path.strip("/")
+	items = [
+		e for e in res.data.get("tree", [])
+		if e.get("type") in ("blob", "commit") and (e["path"] == prefix or e["path"].startswith(prefix + "/"))
+	]
+	return Result(200, items, res.headers)
+
+
+def commit_tree(full, ref, message, entries, retries=2):
+	"""Commit several file changes at once.
+
+	entries: list of dicts {"path", "mode", "type", "sha"}; sha None removes the path.
+	"""
+	result = Result(0, "", {})
+	for attempt in range(retries + 1):
+		branch = gh("GET", f"/repos/{full}/branches/{q(ref, '/')}")
+		if not branch.ok:
+			return branch
+		head = branch.data["commit"]["sha"]
+		base_tree = branch.data["commit"]["commit"]["tree"]["sha"]
+		tree = gh("POST", f"/repos/{full}/git/trees", body={"base_tree": base_tree, "tree": entries}, timeout=120)
+		if not tree.ok:
+			return tree
+		commit = gh(
+			"POST", f"/repos/{full}/git/commits",
+			body={"message": message, "tree": tree.data["sha"], "parents": [head]},
+		)
+		if not commit.ok:
+			return commit
+		result = gh("PATCH", f"/repos/{full}/git/refs/heads/{q(ref, '/')}", body={"sha": commit.data["sha"]})
+		if result.code in (409, 422) and attempt < retries:
+			time.sleep(1.0 + attempt)
+			continue
+		break
+	return result
+
+
+# ----------------------------------------------------------------------
+# downloads.py: Download files from GitHub into the Downloads folder with spoken progress.
+# ----------------------------------------------------------------------
+
+def download_file(url, name, accept=None, params=None, done=None):
+	"""Stream a GitHub URL to disk. done(result) is called on the GUI thread.
+
+	The result's data is the saved path when the download worked.
+	"""
+
+	def work():
+		res = gh("GET", url, params=params, accept=accept, stream=True, timeout=60)
+		if not res.ok:
+			return res
+		response = res.data
+		destination = unique_path(downloads_dir(), safe_filename(name))
+		try:
+			total = int(response.headers.get("Content-Length") or 0)
+		except ValueError:
+			total = 0
+		received, next_mark = 0, 25
+		try:
+			with open(destination, "wb") as f:
+				for chunk in response.iter_content(65536):
+					f.write(chunk)
+					received += len(chunk)
+					if total and next_mark < 100 and received * 100 // total >= next_mark:
+						say(_("{percent} percent").format(percent=next_mark))
+						next_mark += 25
+		except Exception as e:
+			return Result(0, str(e), {})
+		finally:
+			response.close()
+		return Result(200, destination, {})
+
+	def finished(res):
+		if res.ok:
+			say(_("Download complete. Saved to {path}").format(path=res.data))
+		else:
+			say(_("Download failed.") + " " + res.message)
+		if done:
+			done(res)
+
+	say(_("Downloading {name}").format(name=name))
+	run_async(work, finished)
+
+
+# ----------------------------------------------------------------------
+# bookmarks.py: Bookmarked repositories, stored in the add-on's folder.
+# ----------------------------------------------------------------------
+
+def _bookmarks_path():
+	return os.path.join(config_dir(), "bookmarks.json")
+
+
+def get_bookmarks():
+	try:
+		with open(_bookmarks_path(), "r", encoding="utf-8") as f:
+			data = json.load(f)
+		return [x for x in data if isinstance(x, str)] if isinstance(data, list) else []
+	except FileNotFoundError:
+		return []
+	except Exception:
+		log.debugWarning("GitHub for NVDA: could not read bookmarks", exc_info=True)
+		return []
+
+
+def _save_bookmarks(items):
+	try:
+		temporary = _bookmarks_path() + ".tmp"
+		with open(temporary, "w", encoding="utf-8") as f:
+			json.dump(items, f, indent=1)
+		os.replace(temporary, _bookmarks_path())
+		return True
+	except OSError:
+		log.error("GitHub for NVDA: could not save bookmarks", exc_info=True)
+		ui.message(_("Could not save bookmarks."))
+		return False
+
+
+def is_bookmarked(full_name):
+	return full_name.lower() in [b.lower() for b in get_bookmarks()]
+
+
+def toggle_bookmark(full_name):
+	"""Add or remove a bookmark. Returns True if it is now bookmarked."""
+	items = get_bookmarks()
+	lowered = [b.lower() for b in items]
+	if full_name.lower() in lowered:
+		items.pop(lowered.index(full_name.lower()))
+		_save_bookmarks(items)
+		return False
+	items.append(full_name)
+	_save_bookmarks(items)
+	return True
+
+
+def rename_bookmark(old_name, new_name):
+	"""Keep a bookmark pointing at a repository that was renamed."""
+	items = get_bookmarks()
+	changed = False
+	for index, name in enumerate(items):
+		if name.lower() == old_name.lower():
+			items[index] = new_name
+			changed = True
+	if changed:
+		_save_bookmarks(items)
+
+
+def remove_bookmark(full_name):
+	items = [b for b in get_bookmarks() if b.lower() != full_name.lower()]
+	_save_bookmarks(items)
+
+
+def show_bookmarks(parent):
+	from .repos import open_repo
+
+	def fetch(page, selections):
+		return local_fetch(sorted(get_bookmarks(), key=str.lower))(page, selections)
+
+	def remove_action(dlg, name):
+		toggle_bookmark(name)
+		ui.message(_("Removed {name}").format(name=name))
+		dlg.reload()
+
+	actions = [
+		(_("&Open"), lambda d, n: open_repo(d, n)),
+		(_("&Remove Bookmark"), remove_action),
+		(_("Open in &Browser"), lambda d, n: open_url(f"https://github.com/{n}")),
+	]
+	show_modal(PagedListDialog(
+		parent, _("Bookmarked Repositories"), fetch, lambda n: n, actions,
+		empty=_("You have no bookmarks. Open a repository and choose Add Bookmark."),
+	))
+
+
+# ----------------------------------------------------------------------
+# commits.py: Commit history for a repository, branch, folder or single file.
+# ----------------------------------------------------------------------
+
+MAX_DIFF_CHARS = 200000
+
+
+def commit_label(c):
+	commit = c.get("commit") or {}
+	lines = (commit.get("message") or "").splitlines()
+	first = lines[0] if lines else _("(no message)")
+	author = (commit.get("author") or {}).get("name") or _("unknown")
+	date = format_date((commit.get("author") or {}).get("date"))
+	return _("{sha}, {message}, by {author}, {date}").format(
+		sha=c.get("sha", "")[:7], message=first, author=author, date=date
+	)
+
+
+def commit_summary(c):
+	commit = c.get("commit") or {}
+	author = commit.get("author") or {}
+	stats = c.get("stats") or {}
+	files = c.get("files") or []
+	lines = [
+		_("Commit {sha}").format(sha=c.get("sha", "")),
+		_("Author: {name} on {date}").format(name=author.get("name", _("unknown")), date=author.get("date", "")),
+		_("Changes: {additions} additions, {deletions} deletions in {count} files").format(
+			additions=stats.get("additions", 0), deletions=stats.get("deletions", 0), count=len(files)
+		),
+		"",
+		commit.get("message", ""),
+		"",
+		_("Files changed:"),
+	]
+	for f in files:
+		lines.append(
+			f"{f.get('status', 'changed')}: {f.get('filename')} (+{f.get('additions', 0)} -{f.get('deletions', 0)})"
+		)
+	if len(files) >= 300:
+		lines.append(_("GitHub lists at most 300 files here. Use Show Full Diff or the browser for the rest."))
+	return "\n".join(lines)
+
+
+def show_commit(parent, full, sha):
+	"""Load one commit and show its details."""
+	ui.message(_("Loading commit..."))
+
+	def done(res):
+		if not res.ok or not isinstance(res.data, dict):
+			ui.message(_("Could not load the commit.") + " " + res.message)
+			return
+		commit = res.data
+
+		def load_diff(dialog):
+			ui.message(_("Loading full diff..."))
+
+			def got(result):
+				if not result.ok:
+					ui.message(_("Could not load the diff.") + " " + result.message)
+					return
+				text = result.data if isinstance(result.data, str) else str(result.data)
+				dialog.set_text(truncate(text, MAX_DIFF_CHARS, "\n\n" + _("[Diff truncated. Open in browser for the rest.]")))
+				dialog.text.SetFocus()
+				ui.message(_("Diff loaded"))
+
+			run_async(
+				lambda: gh("GET", f"/repos/{full}/commits/{commit['sha']}", accept="application/vnd.github.diff"),
+				got,
+			)
+
+		show_modal(TextViewDialog(
+			parent, _("Commit {sha}").format(sha=commit["sha"][:7]), commit_summary(commit),
+			buttons=[
+				(_("Show Full &Diff"), load_diff),
+				(_("Copy &SHA"), lambda d: copy_to_clipboard(commit["sha"], _("Commit SHA copied."))),
+				(_("Open in &Browser"), lambda d: open_url(commit.get("html_url"))),
+			],
+			label=_("Commit &details:"),
+		))
+
+	run_async(lambda: gh("GET", f"/repos/{full}/commits/{sha}"), done)
+
+
+def show_commits(parent, full, ref="", path=""):
+	def fetch(page, selections):
+		params = {"per_page": items_per_page(), "page": page}
+		if ref:
+			params["sha"] = ref
+		if path:
+			params["path"] = path
+		return gh("GET", f"/repos/{full}/commits", params=params)
+
+	actions = [
+		(_("&View Commit"), lambda d, c: show_commit(d, full, c["sha"])),
+		(_("Copy &SHA"), lambda d, c: copy_to_clipboard(c["sha"], _("Commit SHA copied."))),
+		(_("Open in &Browser"), lambda d, c: open_url(c.get("html_url"))),
+	]
+	branch = ref or _("default branch")
+	if path:
+		title = _("Commits for {path} on {branch}").format(path=path, branch=branch)
+	else:
+		title = _("Commits on {branch}").format(branch=branch)
+	show_modal(PagedListDialog(parent, title, fetch, commit_label, actions, empty=_("No commits found.")))
+
+
+# ----------------------------------------------------------------------
+# releases.py: Releases: read notes, download files, create and delete releases.
+# ----------------------------------------------------------------------
+
+def release_label(r):
+	name = r.get("name") or r.get("tag_name")
+	flags = []
+	if r.get("prerelease"):
+		flags.append(_("pre-release"))
+	if r.get("draft"):
+		flags.append(_("draft"))
+	text = _("{name}, tag {tag}, {date}, {count} files").format(
+		name=name, tag=r.get("tag_name"), date=format_date(r.get("published_at") or r.get("created_at")),
+		count=len(r.get("assets") or []),
+	)
+	return text + (", " + ", ".join(flags) if flags else "")
+
+
+def release_text(r):
+	lines = [
+		f"{r.get('name') or r.get('tag_name')}",
+		_("Tag: {tag}").format(tag=r.get("tag_name")),
+		_("Published: {date} by {author}").format(
+			date=r.get("published_at") or _("not published"), author=(r.get("author") or {}).get("login", _("unknown"))
+		),
+		"", r.get("body") or _("No release notes."), "", _("Files:"),
+	]
+	assets = r.get("assets") or []
+	if not assets:
+		lines.append(_("No downloadable files attached."))
+	for a in assets:
+		lines.append(_("{name}, {size}, downloaded {count} times").format(
+			name=a["name"], size=format_size(a.get("size")), count=a.get("download_count", 0)
+		))
+		if a.get("browser_download_url"):
+			lines.append(_("Download link: {url}").format(url=a["browser_download_url"]))
+	lines += ["", _("Source code is also available as ZIP and tar.gz from the web page.")]
+	return "\n".join(lines)
+
+
+def download_asset(parent, full, release):
+	assets = release.get("assets") or []
+	if not assets:
+		ui.message(_("This release has no downloadable files."))
+		return
+	names = [f"{a['name']} ({format_size(a.get('size'))})" for a in assets]
+	index = ask_choice(parent, _("Download Release File"), _("Choose a file to download:"), names)
+	if index is not None:
+		asset = assets[index]
+		download_file(
+			f"/repos/{full}/releases/assets/{asset['id']}", asset["name"], accept="application/octet-stream"
+		)
+
+
+MAX_RELEASE_FILE_BYTES = 2 * 1024 ** 3  # GitHub accepts release files up to 2 GiB
+
+
+def copy_download_link(parent, release):
+	"""Copy the https://.../releases/download/tag/name.nvda-addon link of a release file."""
+	assets = [a for a in release.get("assets") or [] if a.get("browser_download_url")]
+	if not assets:
+		ui.message(_("This release has no files with a download link."))
+		return
+	index = 0
+	if len(assets) > 1:
+		index = ask_choice(parent, _("Copy Download Link"), _("Choose a file:"), [a["name"] for a in assets])
+		if index is None:
+			return
+	copy_to_clipboard(assets[index]["browser_download_url"], _("Download link copied."))
+
+
+def _add_files_controls(dialog, sizer):
+	"""The "Add Files" part of the New Release window, like "Attach binaries" on the GitHub website."""
+	sizer.Add(wx.StaticText(dialog, label=_("Files to attach to the release:")), 0, wx.LEFT | wx.TOP, PAD)
+	listbox = wx.ListBox(dialog, size=(-1, 90))
+	sizer.Add(listbox, 0, wx.EXPAND | wx.ALL, PAD)
+	row = wx.BoxSizer(wx.HORIZONTAL)
+
+	def refresh():
+		listbox.Set([f"{os.path.basename(p)} ({format_size(os.path.getsize(p))})" if os.path.isfile(p) else os.path.basename(p) for p in dialog.files])
+		if dialog.files:
+			listbox.SetSelection(len(dialog.files) - 1)
+
+	def add(event):
+		chooser = wx.FileDialog(
+			dialog, _("Choose files to add to the release"), style=wx.FD_OPEN | wx.FD_MULTIPLE | wx.FD_FILE_MUST_EXIST
+		)
+		try:
+			if chooser.ShowModal() != wx.ID_OK:
+				return
+			paths = chooser.GetPaths()
+		finally:
+			chooser.Destroy()
+		added = 0
+		for path in paths:
+			if not os.path.isfile(path) or path in dialog.files:
+				continue
+			if os.path.getsize(path) > MAX_RELEASE_FILE_BYTES:
+				ui.message(_("{name} is larger than 2 GB, so GitHub does not accept it.").format(name=os.path.basename(path)))
+				continue
+			dialog.files.append(path)
+			added += 1
+		refresh()
+		ui.message(_("{count} files added. {total} in the list.").format(count=added, total=len(dialog.files)))
+
+	def remove(event):
+		index = listbox.GetSelection()
+		if index == wx.NOT_FOUND or index >= len(dialog.files):
+			ui.message(_("Select a file first."))
+			return
+		name = os.path.basename(dialog.files.pop(index))
+		refresh()
+		ui.message(_("{name} removed.").format(name=name))
+
+	button = wx.Button(dialog, label=_("&Add Files..."))
+	button.Bind(wx.EVT_BUTTON, add)
+	row.Add(button, 0, wx.ALL, 3)
+	button = wx.Button(dialog, label=_("Remove &Selected File"))
+	button.Bind(wx.EVT_BUTTON, remove)
+	row.Add(button, 0, wx.ALL, 3)
+	sizer.Add(row, 0)
+
+
+def upload_release_files(full, release, files, progress=None):
+	"""Blocking. Upload files to a release. Returns (uploaded names, failed descriptions)."""
+	base = re.sub(r"\{.*$", "", release.get("upload_url") or "")
+	if not base:
+		base = f"https://uploads.github.com/repos/{full}/releases/{release['id']}/assets"
+	done, failed = [], []
+	for number, path in enumerate(files, 1):
+		name = os.path.basename(path)
+		if progress:
+			progress(number, len(files), name)
+		content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+		try:
+			with open(path, "rb") as handle:
+				res = gh(
+					"POST", base, params={"name": name}, data=handle,
+					headers={"Content-Type": content_type}, timeout=900, retries=0,
+				)
+		except OSError as e:
+			failed.append(f"{name} ({e.strerror or e})")
+			continue
+		if res.ok:
+			done.append(name)
+		else:
+			failed.append(f"{name} ({res.message})")
+	return done, failed
+
+
+def create_release(parent, full, branch, on_done=None):
+	values = ask_form(
+		parent, _("New Release"),
+		[
+			(_("&Tag (for example v1.0.0):"), "tag", False, "", True),
+			(_("Release &title (optional):"), "name", False, ""),
+			(_("&Target branch:"), "target", False, branch or ""),
+			(_("Release &notes:"), "notes", True, ""),
+		],
+		checks=[(_("This is a &pre-release"), "pre", False), (_("Save as a &draft"), "draft", False)],
+		ok_label=_("&Create Release"), extra=_add_files_controls,
+	)
+	if not values:
+		return
+	files = values.get("files") or []
+	body = {
+		"tag_name": values["tag"].strip(), "name": values["name"].strip() or values["tag"].strip(),
+		"body": values["notes"], "draft": values["draft"], "prerelease": values["pre"],
+	}
+	if values["target"].strip():
+		body["target_commitish"] = values["target"].strip()
+	ui.message(_("Creating release..."))
+
+	def work():
+		res = gh("POST", f"/repos/{full}/releases", body=body)
+		if not res.ok or not isinstance(res.data, dict) or not files:
+			return Result(res.code, (res, [], []), res.headers)
+		say(_("Release created. Uploading {count} files...").format(count=len(files)))
+		uploaded, failed = upload_release_files(
+			full, res.data, files,
+			lambda n, total, name: say(_("Uploading {number} of {total}: {name}").format(number=n, total=total, name=name)),
+		)
+		return Result(res.code, (res, uploaded, failed), res.headers)
+
+	def done(result):
+		if not isinstance(result, Result) or not isinstance(result.data, tuple):
+			ui.message(_("Could not create the release.") + " " + getattr(result, "message", ""))
+			return
+		res, uploaded, failed = result.data
+		if not res.ok:
+			ui.message(_("Could not create the release.") + " " + res.message)
+			return
+		text = _("Release created.")
+		if files:
+			text += " " + _("Uploaded {ok} of {total} files.").format(ok=len(uploaded), total=len(files))
+			if failed:
+				text += " " + _("Not uploaded: {names}").format(names="; ".join(failed[:5]))
+			elif uploaded:
+				text += " " + _("Open View Release to copy the download links.")
+		ui.message(text)
+		if on_done:
+			on_done()
+
+	run_async(work, done)
+
+
+def show_releases(parent, full, can_write=False, branch=""):
+	def fetch(page, selections):
+		return gh("GET", f"/repos/{full}/releases", params={"per_page": items_per_page(), "page": page})
+
+	def view(dlg, r):
+		show_modal(TextViewDialog(
+			dlg, r.get("name") or r.get("tag_name"), release_text(r),
+			buttons=[
+				(_("&Download File"), lambda d: download_asset(d, full, r)),
+				(_("Copy Download &Link"), lambda d: copy_download_link(d, r)),
+				(_("Open in &Browser"), lambda d: open_url(r.get("html_url"))),
+			],
+			label=_("Release &details:"),
+		))
+
+	def new(dlg, _item):
+		create_release(dlg, full, branch, dlg.reload)
+
+	def delete(dlg, r):
+		if not confirm_typed(
+			dlg, _("Delete Release"),
+			_("This deletes the release {name}. The tag stays in the repository.").format(
+				name=r.get("name") or r.get("tag_name")
+			),
+			"DELETE",
+		):
+			ui.message(_("Deletion cancelled."))
+			return
+
+		def done(res):
+			if res.ok:
+				ui.message(_("Release deleted."))
+				dlg.reload()
+			else:
+				ui.message(_("Could not delete the release.") + " " + res.message)
+
+		run_async(lambda: gh("DELETE", f"/repos/{full}/releases/{r['id']}"), done)
+
+	actions = [
+		(_("&View Release"), view),
+		(_("&Download File"), lambda d, r: download_asset(d, full, r)),
+		(_("Copy Download &Link"), lambda d, r: copy_download_link(d, r)),
+		(_("Open in &Browser"), lambda d, r: open_url(r.get("html_url"))),
+	]
+	if can_write:
+		actions += [(_("&New Release"), new, False), (_("De&lete Release"), delete)]
+	show_modal(PagedListDialog(
+		parent, _("Releases: {repo}").format(repo=full), fetch, release_label, actions,
+		empty=_("This repository has no releases."),
+	))
 
 
 # ----------------------------------------------------------------------
@@ -342,7 +990,7 @@ class FileViewDialog(AccessibleDialog):
 			ui.message(_("No changes to save."))
 			return
 		default = _("Update {name}").format(name=self.entry["name"])
-		message = prompt_text(self, _("Commit Message"), _("&Commit message:"), default)
+		message = ask_commit_message(self, default)
 		if message is None:
 			return
 		data = encode_text(self.text.GetValue(), self.encoding, self.crlf)
@@ -383,7 +1031,7 @@ class FileViewDialog(AccessibleDialog):
 			ui.message(_("There is no text content to copy."))
 
 	def on_download(self, event):
-		from .repotools import download_file
+		from .repos import download_file
 		download_file(
 			content_url(self.ctx.full, self.entry["path"]), self.entry["name"],
 			accept="application/vnd.github.raw+json",
@@ -391,7 +1039,7 @@ class FileViewDialog(AccessibleDialog):
 		)
 
 	def on_history(self, event):
-		from .repotools import show_commits
+		from .repos import show_commits
 		show_commits(self, self.ctx.full, self.ctx.ref, self.entry["path"])
 
 	def on_browser(self, event):
@@ -530,7 +1178,7 @@ class ItemActions:
 
 	# --- simple actions ------------------------------------------------
 	def history(self, entry):
-		from .repotools import show_commits
+		from .repos import show_commits
 		show_commits(self.dlg, self.full, self.ref, entry["path"])
 
 	def properties(self, entry):
@@ -571,7 +1219,7 @@ class ItemActions:
 		self.dlg.run(work, done)
 
 	def download_file(self, entry):
-		from .repotools import download_file
+		from .repos import download_file
 		download_file(
 			content_url(self.full, entry["path"]), entry["name"],
 			accept="application/vnd.github.raw+json",
@@ -647,7 +1295,7 @@ class ItemActions:
 			ui.message(_("Skipping files over 50 MB: {names}").format(names=", ".join(skipped)))
 		if not files:
 			return
-		message = prompt_text(d, _("Commit Message"), _("&Commit message:"), _("Upload files via GitHub for NVDA"))
+		message = ask_commit_message(d, _("Upload files via GitHub for NVDA"))
 		if message is None:
 			return
 		self._commit_local_files(
@@ -687,7 +1335,7 @@ class ItemActions:
 			ui.message(_("Cancelled. Nothing was uploaded."))
 			return
 		default = _("Upload folder {name} via GitHub for NVDA").format(name=name)
-		message = prompt_text(d, _("Commit Message"), _("&Commit message:"), default)
+		message = ask_commit_message(d, default)
 		if message is None:
 			return
 		self._commit_local_files(
@@ -786,7 +1434,7 @@ class ItemActions:
 			return
 		verb = _("Duplicate {name}") if duplicate else _("Move {name} to {new}")
 		default = verb.format(name=entry["name"], new=new)
-		message = prompt_text(d, _("Commit Message"), _("&Commit message:"), default)
+		message = ask_commit_message(d, default)
 		if message is None:
 			return
 		ui.message(_("Working..."))
@@ -841,7 +1489,7 @@ class ItemActions:
 			ui.message(_("Deletion cancelled."))
 			return
 		default = _("Delete folder {name}").format(name=entry["name"])
-		message = prompt_text(d, _("Commit Message"), _("&Commit message:"), default)
+		message = ask_commit_message(d, default)
 		if message is None:
 			return
 		ui.message(_("Deleting..."))
@@ -1020,9 +1668,9 @@ class RepoActions:
 		), done)
 
 	def edit_readme(self):
-		can_write = permissions(self.repo)[0]
+		can_write = permissions(self.repo)[0] and is_owner(self.repo)
 		if not can_write:
-			ui.message(_("You need write access to {name} to edit its README.").format(name=self.full))
+			ui.message(_("Only the owner of {name} can edit its README here.").format(name=self.full))
 			return
 		ui.message(_("Loading README..."))
 		ref = self.ref()
@@ -1129,7 +1777,8 @@ class RepoActions:
 
 		self.dialog.run(lambda: gh("GET", f"/user/starred/{self.full}"), got)
 
-	def toggle_star(self):
+	def toggle_star(self, after=None):
+		"""Star or unstar the repository. after() is called once it worked."""
 		if self.starred is None:
 			ui.message(_("Still checking star status."))
 			return
@@ -1139,6 +1788,8 @@ class RepoActions:
 			if res.code == 204:
 				self.starred = not self.starred
 				ui.message(_("Starred") if self.starred else _("Unstarred"))
+				if after:
+					after()
 			else:
 				ui.message(_("Star action failed.") + " " + res.message)
 
@@ -1227,6 +1878,9 @@ class RepoBrowserDialog(AccessibleDialog):
 		self.entries, self.shown = [], []
 		self._search_timer = None
 		self.can_write, self.can_admin = permissions(repo)
+		self.is_owner = is_owner(repo)
+		# Creating, uploading, renaming and deleting are offered to the owner only.
+		self.can_write = self.can_write and self.is_owner
 		self.has_token = has_token()
 		self._open_after_load = open_file
 		self._load_id = 0
@@ -1266,10 +1920,19 @@ class RepoBrowserDialog(AccessibleDialog):
 		self.add_button(row, _("Pull &Requests"), self.on_pulls)
 		self.add_button(row, _("A&ctions"), self.on_actions)
 		self.add_button(row, _("Rel&eases"), self.on_releases)
-		self.add_button(row, _("&More Options"), self.on_more_options)
+		# Star and Unstar are one button that changes its name, like Follow and Unfollow.
+		self.btn_star = self.add_button(row, _("&Star"), self.on_star)
+		self.btn_star.Enable(False)
+		self.btn_star.Show(self.has_token)
+		# More Options holds the owner's actions, so only the owner gets the button.
+		self.btn_more = self.add_button(row, _("&More Options"), self.on_more_options)
+		self.btn_more.Show(bool(self._more_entries()))
 		row.Add(self.close_button(), 0, wx.ALL, 3)
 		sizer.Add(row, 0, wx.ALIGN_CENTER)
+		self._button_row = row
 		self.layout(sizer)
+		if self.has_token:
+			self.actions.check_star(self._update_star_button)
 		self.load_dir(path)
 
 	# --- context for sub windows ---------------------------------------
@@ -1463,7 +2126,7 @@ class RepoBrowserDialog(AccessibleDialog):
 
 	# --- windows ------------------------------------------------------------
 	def on_commits(self, event):
-		from .repotools import show_commits
+		from .repos import show_commits
 		show_commits(self, self.full, self.ref, self.path)
 
 	def on_issues(self, event):
@@ -1479,7 +2142,7 @@ class RepoBrowserDialog(AccessibleDialog):
 		show_runs(self, self.full, self.ref, self.can_write)
 
 	def on_releases(self, event):
-		from .repotools import show_releases
+		from .repos import show_releases
 		show_releases(self, self.full, self.can_write, self.ref)
 
 	# --- menus --------------------------------------------------------------
@@ -1489,8 +2152,35 @@ class RepoBrowserDialog(AccessibleDialog):
 		self.actions.repo = repo
 		self.full = repo["full_name"]
 		self.can_write, self.can_admin = permissions(repo)
+		self.is_owner = is_owner(repo)
+		self.can_write = self.can_write and self.is_owner
 		self.SetTitle(self.full)
 		self.info.SetValue(repo_info_text(repo, self.can_write, self.can_admin))
+		show_more = bool(self._more_entries())
+		if self.btn_more.IsShown() != show_more:
+			self.btn_more.Show(show_more)
+			apply_access_keys(self)
+			self._button_row.Layout()
+			self.Layout()
+
+	# --- star ----------------------------------------------------------
+	def _update_star_button(self):
+		"""Name the Star button after what it will do now."""
+		if self._dead or self.actions.starred is None:
+			return
+		self.btn_star.SetLabel(_("Un&star") if self.actions.starred else _("&Star"))
+		self.btn_star.Enable(True)
+		apply_access_keys(self)
+
+	def on_star(self, event):
+		def changed():
+			delta = 1 if self.actions.starred else -1
+			count = max(0, int(self.repo.get("stargazers_count", 0) or 0) + delta)
+			self.repo["stargazers_count"] = count
+			self.info.SetValue(repo_info_text(self.repo, self.can_write, self.can_admin))
+			self._update_star_button()
+
+		self.actions.toggle_star(after=changed)
 
 	def _more_entries(self):
 		"""The repository-wide write actions."""
@@ -1509,7 +2199,7 @@ class RepoBrowserDialog(AccessibleDialog):
 		"""The More Options menu: everything the buttons and the repository menu do not cover."""
 		entries = self._more_entries()
 		if not entries:
-			ui.message(_("No more options. Star, visibility and copy links are in the Applications key menu in My Repositories."))
+			ui.message(_("Only the owner of this repository has more options."))
 			return
 		if event is not None and isinstance(event, wx.ContextMenuEvent):
 			self.popup_menu(entries, self.menu_position(event, self.listbox))
@@ -1633,7 +2323,7 @@ class RepoBrowserDialog(AccessibleDialog):
 		):
 			return
 		default = _("Delete {name}").format(name=entry["name"])
-		message = prompt_text(self, _("Commit Message"), _("&Commit message:"), default)
+		message = ask_commit_message(self, default)
 		if message is None:
 			return
 
@@ -1654,7 +2344,7 @@ class RepoBrowserDialog(AccessibleDialog):
 # ----------------------------------------------------------------------
 
 def show_repo_list(parent, title, url, params=None, empty=None, unwrap_items=False):
-	from .dialogs import PagedListDialog
+	from .core import PagedListDialog
 
 	def fetch(page, selections):
 		query = dict(params or {})
@@ -1667,13 +2357,68 @@ def show_repo_list(parent, title, url, params=None, empty=None, unwrap_items=Fal
 	def bookmark(dlg, repo):
 		ui.message(_("Bookmark added") if toggle_bookmark(repo["full_name"]) else _("Bookmark removed"))
 
+	# Whether you starred each repository shown so far: {full name: True/False}. The Star button turns
+	# into Unstar (and back) for the selected repository. This works for any repository, including the
+	# ones that belong to an organization.
+	stars = {}
+
+	def star_label(repo):
+		if repo is not None and stars.get(repo["full_name"].lower()):
+			return _("Un&star")
+		return _("&Star")
+
+	def check_star(full):
+		key = full.lower()
+		if key not in stars:
+			code = gh("GET", f"/user/starred/{full}").code
+			if code in (204, 404):
+				stars[key] = code == 204
+		return stars.get(key)
+
+	def on_select(dlg, repo):
+		if not has_token() or repo["full_name"].lower() in stars:
+			return
+		full = repo["full_name"]
+		dlg.run(lambda: check_star(full), lambda _result: dlg.refresh_actions())
+
+	def star(dlg, repo):
+		if not has_token():
+			ui.message(_("Set your token first to star repositories."))
+			return
+		full = repo["full_name"]
+
+		def work():
+			current = check_star(full)
+			if current is None:
+				return Result(0, "", {}), None
+			return gh("DELETE" if current else "PUT", f"/user/starred/{full}"), current
+
+		def done(outcome):
+			if not isinstance(outcome, tuple):
+				ui.message(_("Star action failed.") + " " + outcome.message)
+				return
+			res, was_starred = outcome
+			if was_starred is None:
+				ui.message(_("Could not check whether you starred {name}.").format(name=full))
+			elif res.code == 204:
+				stars[full.lower()] = not was_starred
+				ui.message(_("Unstarred") if was_starred else _("Starred"))
+				dlg.refresh_actions()
+			else:
+				ui.message(_("Star action failed.") + " " + res.message)
+
+		dlg.run(work, done)
+
 	actions = [
 		(_("&Open"), lambda d, r: open_repo(d, r["full_name"])),
 		(_("Open in &Browser"), lambda d, r: open_url(r.get("html_url"))),
 		(_("Add or Remove &Bookmark"), bookmark),
 	]
+	if has_token():
+		actions.append((star_label, star))
 	show_modal(PagedListDialog(
-		parent, title, fetch, repo_label, actions, empty=empty or _("No repositories found.")
+		parent, title, fetch, repo_label, actions, empty=empty or _("No repositories found."),
+		on_select=on_select,
 	))
 
 
@@ -1912,7 +2657,7 @@ def open_link(parent, text):
 		from .conversation import show_conversation
 		show_conversation(parent, ref.full_name, ref.number, ref.kind == "pull")
 	elif ref.kind == "commit":
-		from .repotools import show_commit
+		from .repos import show_commit
 		show_commit(parent, ref.full_name, ref.number)
 	elif ref.kind in ("blob", "tree"):
 		open_blob_or_tree(parent, ref)

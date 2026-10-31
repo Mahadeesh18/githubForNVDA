@@ -7,47 +7,66 @@
 
 import addonHandler
 import datetime
+import gui
+import nvwave
+import os
 import re
 import threading
-import tones
+import time
 import ui
 import wx
 from gui import guiHelper
 from gui.settingsDialogs import SettingsPanel
 from logHandler import log
 
-from .logic import (
-	format_date,
-	repo_from_api_url,
-)
 from .core import (
-	NOTIFICATION_FILTER_ALL,
-	NOTIFICATION_FILTER_DIRECT,
-	NOTIFICATION_INTERVALS,
-	Result,
+	AccessibleDialog,
+	ask_form,
+	config_dir,
+	confirm,
+	confirm_typed,
+	copy_to_clipboard,
 	delete_token,
+	escape_label,
 	forget_identity,
+	format_date,
+	get_clipboard_text,
 	get_pref,
 	gh,
 	has_token,
+	inform,
 	items_per_page,
 	load_token,
+	NOTIFICATION_FILTER_ALL,
+	NOTIFICATION_FILTER_DIRECT,
+	NOTIFICATION_INTERVALS,
 	notification_seconds,
 	open_url,
+	PAD,
+	PagedListDialog,
+	parse_github_link,
+	prompt_text,
+	repo_from_api_url,
+	Result,
 	run_async,
 	save_token,
 	say,
 	set_pref,
-)
-from .dialogs import (
-	PagedListDialog,
-	confirm,
-	copy_to_clipboard,
-	inform,
 	show_modal,
+	TextViewDialog,
+)
+from .repos import (
+	open_link,
+	show_bookmarks,
+	show_my_repos,
 )
 from .conversation import (
 	show_conversation,
+	show_my_work,
+)
+from .profile import (
+	show_profile,
+	show_settings_menu,
 )
 
 addonHandler.initTranslation()
@@ -138,7 +157,7 @@ def open_notification(dialog, n):
 		show_conversation(dialog, full, number, subject.get("type") == "PullRequest", n.get("id"))
 		dialog.reload()
 	elif subject.get("type") == "Commit" and full and subject.get("url"):
-		from .repotools import show_commit
+		from .repos import show_commit
 		show_commit(dialog, full, subject["url"].rsplit("/", 1)[-1])
 	else:
 		open_url(html_url(n))
@@ -244,6 +263,60 @@ def summarize(items, details):
 	if count == 1:
 		return _("1 new GitHub notification")
 	return _("{count} new GitHub notifications").format(count=count)
+
+
+SOUNDS_DIR = os.path.join(os.path.dirname(__file__), "sounds")
+NOTIFICATION_SOUND = os.path.join(SOUNDS_DIR, "newNotification.wav")
+
+# The sounds that can be chosen in Settings: (saved name, file inside the sounds folder or None).
+SOUND_DEFAULT, SOUND_SPARE, SOUND_CUSTOM = "default", "spare", "custom"
+SOUND_CHOICES = (
+	(SOUND_DEFAULT, "newNotification.wav"),
+	(SOUND_SPARE, "spare.wav"),
+	(SOUND_CUSTOM, None),
+)
+
+
+def sound_choice_labels():
+	return [
+		_("Default notification sound"),
+		_("Alternative notification sound"),
+		_("My own sound file (WAV)"),
+	]
+
+
+def usable_sound_file(path):
+	"""True when path is an existing .wav file."""
+	path = (path or "").strip()
+	return bool(path) and path.lower().endswith(".wav") and os.path.isfile(path)
+
+
+def sound_path(choice=None, custom_file=None):
+	"""The file to play. A missing or unusable custom file falls back to the default sound."""
+	choice = get_pref("notificationSound") if choice is None else choice
+	custom_file = get_pref("notificationSoundFile") if custom_file is None else custom_file
+	if choice == SOUND_CUSTOM and usable_sound_file(custom_file):
+		return custom_file.strip()
+	for name, filename in SOUND_CHOICES:
+		if name == choice and filename:
+			candidate = os.path.join(SOUNDS_DIR, filename)
+			if os.path.isfile(candidate):
+				return candidate
+	return NOTIFICATION_SOUND
+
+
+def play_notification_sound(choice=None, custom_file=None):
+	"""Play the new-notification sound chosen in Settings, without blocking."""
+	path = sound_path(choice, custom_file)
+	try:
+		nvwave.playWaveFile(path, asynchronous=True)
+	except Exception:
+		log.debugWarning("GitHub for NVDA: notification sound failed", exc_info=True)
+		if path != NOTIFICATION_SOUND:
+			try:
+				nvwave.playWaveFile(NOTIFICATION_SOUND, asynchronous=True)
+			except Exception:
+				log.debugWarning("GitHub for NVDA: default notification sound failed", exc_info=True)
 
 
 def newer_than(items, last_seen):
@@ -438,10 +511,7 @@ class NotificationMonitor:
 		if self.paused and not force:
 			return
 		if get_pref("notificationBeep"):
-			try:
-				tones.beep(880, 80)
-			except Exception:
-				log.debugWarning("GitHub for NVDA: beep failed", exc_info=True)
+			play_notification_sound()
 		say(summarize(fresh, get_pref("notificationDetails")))
 
 
@@ -545,17 +615,79 @@ class GitHubSettingsPanel(SettingsPanel):
 		)
 		self.details = helper.addItem(wx.CheckBox(self, label=_("Say what the new notifications are &about")))
 		self.details.SetValue(bool(get_pref("notificationDetails")))
-		self.beep = helper.addItem(wx.CheckBox(self, label=_("&Beep when there are new notifications")))
+		self.beep = helper.addItem(wx.CheckBox(self, label=_("&Play a sound when there are new notifications")))
 		self.beep.SetValue(bool(get_pref("notificationBeep")))
+		self.beep.Bind(wx.EVT_CHECKBOX, lambda e: self._updateSoundControls())
+		self.sound = helper.addLabeledControl(
+			_("Notification so&und:"), wx.Choice, choices=sound_choice_labels()
+		)
+		saved = get_pref("notificationSound")
+		self.sound.SetSelection(next((i for i, (name, f) in enumerate(SOUND_CHOICES) if name == saved), 0))
+		self.sound.Bind(wx.EVT_CHOICE, lambda e: self._updateSoundControls())
+		self.soundFile = helper.addLabeledControl(_("Your own sound fi&le path:"), wx.TextCtrl)
+		self.soundFile.SetValue(str(get_pref("notificationSoundFile") or ""))
+		self.soundBrowse = wx.Button(self, label=_("Ch&oose sound file..."))
+		self.soundBrowse.Bind(wx.EVT_BUTTON, self.onBrowseSound)
+		helper.addItem(self.soundBrowse)
+		self.soundPreview = wx.Button(self, label=_("Pre&view the sound"))
+		self.soundPreview.Bind(wx.EVT_BUTTON, self.onPreviewSound)
+		helper.addItem(self.soundPreview)
+		self._updateSoundControls()
 		self.markRead = helper.addItem(wx.CheckBox(self, label=_("&Mark a notification as read when I open it")))
 		self.markRead.SetValue(bool(get_pref("markReadOnView")))
 		self.wrap = helper.addItem(wx.CheckBox(self, label=_("&Wrap long lines when viewing files")))
 		self.wrap.SetValue(bool(get_pref("wrapFileText")))
+		self.askCommit = helper.addItem(wx.CheckBox(self, label=_("&Ask me for a commit message when I change files")))
+		self.askCommit.SetValue(bool(get_pref("askCommitMessage")))
 		self.folder = helper.addLabeledControl(_("&Download folder (empty means your Downloads folder):"), wx.TextCtrl)
 		self.folder.SetValue(str(get_pref("downloadFolder") or ""))
 		browse = wx.Button(self, label=_("&Browse for folder..."))
 		browse.Bind(wx.EVT_BUTTON, self.onBrowse)
 		helper.addItem(browse)
+
+	def _soundChoice(self):
+		return SOUND_CHOICES[max(0, self.sound.GetSelection())][0]
+
+	def _updateSoundControls(self):
+		"""The sound controls only matter when the sound is on, and the file box only for your own file."""
+		on = self.beep.GetValue()
+		custom = on and self._soundChoice() == SOUND_CUSTOM
+		self.sound.Enable(on)
+		self.soundFile.Enable(custom)
+		self.soundBrowse.Enable(custom)
+		self.soundPreview.Enable(on)
+
+	def onBrowseSound(self, event):
+		current = self.soundFile.GetValue().strip()
+		dialog = wx.FileDialog(
+			self, _("Choose a notification sound"),
+			defaultDir=os.path.dirname(current) if current and os.path.isdir(os.path.dirname(current)) else "",
+			wildcard=_("WAV sound files (*.wav)") + "|*.wav", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+		)
+		try:
+			if dialog.ShowModal() == wx.ID_OK:
+				self.soundFile.SetValue(dialog.GetPath())
+				play_notification_sound(SOUND_CUSTOM, dialog.GetPath())
+		finally:
+			dialog.Destroy()
+
+	def onPreviewSound(self, event):
+		choice = self._soundChoice()
+		custom = self.soundFile.GetValue()
+		if choice == SOUND_CUSTOM and not usable_sound_file(custom):
+			ui.message(_("That sound file was not found or is not a WAV file, so the default sound plays."))
+		play_notification_sound(choice, custom)
+
+	def isValid(self):
+		"""Do not save a custom sound that cannot be played."""
+		if self.beep.GetValue() and self._soundChoice() == SOUND_CUSTOM and not usable_sound_file(self.soundFile.GetValue()):
+			wx.MessageBox(
+				_("Your own sound file was not found, or it is not a WAV file. Choose an existing .wav file, or pick another sound."),
+				_("Notification sound"), wx.OK | wx.ICON_WARNING, self,
+			)
+			self.soundFile.SetFocus()
+			return False
+		return True
 
 	def _makeTokenControls(self, settingsSizer, helper):
 		"""The personal access token: its text box, a check box that shows it, and a button that tests it.
@@ -687,7 +819,497 @@ class GitHubSettingsPanel(SettingsPanel):
 		set_pref("notificationFilter", max(0, self.notifyFilter.GetSelection()))
 		set_pref("notificationDetails", self.details.GetValue())
 		set_pref("notificationBeep", self.beep.GetValue())
+		set_pref("notificationSound", self._soundChoice())
+		set_pref("notificationSoundFile", self.soundFile.GetValue().strip())
 		set_pref("markReadOnView", self.markRead.GetValue())
 		set_pref("wrapFileText", self.wrap.GetValue())
+		set_pref("askCommitMessage", self.askCommit.GetValue())
 		set_pref("downloadFolder", self.folder.GetValue().strip())
 		monitor.start()
+
+
+# ----------------------------------------------------------------------
+# explore.py: Search Public Repositories: search repositories, users, issues and code (works without a token,
+# ----------------------------------------------------------------------
+
+SEARCH_MAX_RESULTS = 1000
+
+
+def sorts(kind=0):
+	"""(label, API value) pairs for each kind of search. The list changes with the kind,
+	but the Sort by box itself is always there and always enabled."""
+	best = (_("Best match"), "")
+	if kind == 0:
+		return [best, (_("Most stars"), "stars"), (_("Most forks"), "forks"), (_("Recently updated"), "updated")]
+	if kind == 1:
+		return [best, (_("Most followers"), "followers"), (_("Most repositories"), "repositories"), (_("Recently joined"), "joined")]
+	if kind == 2:
+		return [
+			(_("Recently updated"), "updated"), (_("Best match"), ""), (_("Most commented"), "comments"),
+			(_("Most reactions"), "reactions"), (_("Recently created"), "created"),
+		]
+	return [best]  # GitHub cannot sort code search results
+
+
+def kinds():
+	return [_("Repositories"), _("Users and organizations"), _("Issues and pull requests"), _("Code")]
+
+
+# --- no search history ----------------------------------------------------
+# Searches are never saved. Earlier versions kept a list of them in a file; it is deleted.
+
+def remove_saved_history():
+	try:
+		path = os.path.join(config_dir(), "search_history.json")
+		if os.path.isfile(path):
+			os.remove(path)
+	except OSError:
+		pass
+
+
+class SearchDialog(AccessibleDialog):
+	"""Search GitHub. Pasting a GitHub link opens it directly."""
+
+	def __init__(self, parent, initial_query=""):
+		super().__init__(parent, _("Search Public Repositories"), (760, 620))
+		self.page, self.results, self.total, self.kind = 1, [], 0, 0
+		remove_saved_history()
+		sizer = wx.BoxSizer(wx.VERTICAL)
+		sizer.Add(wx.StaticText(self, label=_("Search &for:")), 0, wx.LEFT | wx.TOP, PAD)
+		self.kind_choice = wx.Choice(self, choices=kinds())
+		self.kind_choice.SetSelection(0)
+		self.kind_choice.Bind(wx.EVT_CHOICE, self.on_kind)
+		sizer.Add(self.kind_choice, 0, wx.ALL, PAD)
+		sizer.Add(wx.StaticText(self, label=_("S&ort by:")), 0, wx.LEFT, PAD)
+		self.sort = wx.Choice(self, choices=[x[0] for x in sorts(0)])
+		self.sort.SetSelection(0)
+		self._sort_kind = 0
+		sizer.Add(self.sort, 0, wx.ALL, PAD)
+		# Order on screen and for Tab: Sort by, the search box, the Search button, then the results.
+		sizer.Add(wx.StaticText(self, label=_("&Search (keywords, owner/repo, or a GitHub link):")), 0, wx.LEFT, PAD)
+		self.query = wx.TextCtrl(self, value=initial_query, style=wx.TE_PROCESS_ENTER)
+		self.query.Bind(wx.EVT_TEXT_ENTER, lambda e: self.search(1))
+		sizer.Add(self.query, 0, wx.EXPAND | wx.ALL, PAD)
+		search_row = wx.BoxSizer(wx.HORIZONTAL)
+		self.add_button(search_row, _("Searc&h"), lambda e: self.search(1))
+		sizer.Add(search_row, 0, wx.LEFT, PAD)
+		sizer.Add(wx.StaticText(self, label=_("&Results:")), 0, wx.LEFT | wx.TOP, PAD)
+		self.listbox = wx.ListBox(self)
+		self.listbox.Bind(wx.EVT_LISTBOX_DCLICK, self.on_open)
+		self.listbox.Bind(wx.EVT_KEY_DOWN, self.on_key)
+		self.listbox.enter_action = lambda: self.on_open(None)
+		sizer.Add(self.listbox, 1, wx.EXPAND | wx.ALL, PAD)
+		row = wx.WrapSizer(wx.HORIZONTAL)
+		self.btn_prev = self.add_button(row, _("&Previous Page"), lambda e: self.search(self.page - 1))
+		self.btn_next = self.add_button(row, _("&Next Page"), lambda e: self.search(self.page + 1))
+		row.Add(self.close_button(), 0, wx.ALL, 3)
+		sizer.Add(row, 0, wx.ALIGN_CENTER)
+		self.layout(sizer, focus=self.query)
+		self.btn_prev.Disable()
+		self.btn_next.Disable()
+		self._search_id = 0
+		if initial_query:
+			wx.CallAfter(self.search, 1)
+
+	def on_kind(self, event):
+		"""Fill the Sort by box for the chosen kind of search. It is never disabled or hidden,
+		so it stays in the Tab order whatever is searched for."""
+		kind = self.kind_choice.GetSelection()
+		if kind == self._sort_kind:
+			return
+		self._sort_kind = kind
+		self.sort.Freeze()
+		try:
+			self.sort.Clear()
+			for label, _value in sorts(kind):
+				self.sort.Append(label)
+			self.sort.SetSelection(0)
+		finally:
+			self.sort.Thaw()
+
+	def on_key(self, event):
+		if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+			self.on_open(None)
+		else:
+			event.Skip()
+
+	def _label(self, item):
+		from .conversation import search_label
+		from .repos import repo_label
+		if self.kind == 0:
+			return repo_label(item)
+		if self.kind == 1:
+			return _("{name}, {type}").format(name=item.get("login"), type=item.get("type", ""))
+		if self.kind == 2:
+			return search_label(item)
+		repo = (item.get("repository") or {}).get("full_name", "")
+		return _("{repo}: {path}").format(repo=repo, path=item.get("path", ""))
+
+	def search(self, page):
+		query = self.query.GetValue().strip()
+		if not query:
+			ui.message(_("Type something to search for."))
+			self.query.SetFocus()
+			return
+		if page < 1:
+			return
+		if page == 1:
+			from .repos import open_link
+			if parse_github_link(query) and open_link(self, query):
+				return
+		kind = self.kind_choice.GetSelection()
+		if kind == 3 and not has_token():
+			ui.message(_("GitHub only allows code search when you are signed in. Set your token first."))
+			return
+		endpoint = ["/search/repositories", "/search/users", "/search/issues", "/search/code"][kind]
+		params = {"q": query, "per_page": items_per_page(), "page": page}
+		options = sorts(kind)
+		sort = options[max(0, min(self.sort.GetSelection(), len(options) - 1))][1]
+		if sort:
+			params.update(sort=sort, order="desc")
+		ui.message(_("Searching..."))
+		self._search_id += 1
+		request = self._search_id
+
+		def done(res):
+			if request != self._search_id:
+				return
+			if not res.ok or not isinstance(res.data, dict):
+				ui.message(_("Search failed.") + " " + res.message)
+				return
+			items = res.data.get("items", [])
+			if not items and page > 1:
+				ui.message(_("No more results."))
+				return
+			self.kind, self.page, self.results = kind, page, items
+			self.total = res.data.get("total_count", 0)
+			self.listbox.Set([self._label(r) for r in items])
+			self.btn_prev.Enable(page > 1)
+			self.btn_next.Enable(page * items_per_page() < min(self.total, SEARCH_MAX_RESULTS))
+			if items:
+				self.listbox.SetSelection(0)
+				self.listbox.SetFocus()
+				ui.message(_("Page {page}, {count} of {total} results").format(page=page, count=len(items), total=self.total))
+			else:
+				ui.message(_("Nothing found."))
+
+		if kind == 2:
+			from .conversation import search_issues
+
+			def work():
+				res = search_issues(query, page, items_per_page(), sort)
+				if res.ok:
+					extra = SEARCH_MAX_RESULTS if res.has_next else 0
+					return Result(200, {"items": res.data, "total_count": len(res.data) + extra}, {})
+				return res
+		else:
+			def work():
+				return gh("GET", endpoint, params=params)
+		self.run(work, done)
+
+	def on_open(self, event):
+		i = self.listbox.GetSelection()
+		if i == wx.NOT_FOUND or i >= len(self.results):
+			ui.message(_("Select a result first."))
+			return
+		item = self.results[i]
+		from .repos import open_repo
+		if self.kind == 0:
+			open_repo(self, item["full_name"])
+		elif self.kind == 1:
+			from .profile import show_user
+			show_user(self, item["login"])
+		elif self.kind == 2:
+			import re
+			from .conversation import show_conversation
+			repo = re.sub(r"^.*/repos/", "", item.get("repository_url", ""))
+			show_conversation(self, repo, item["number"], "pull_request" in item)
+		else:
+			full = (item.get("repository") or {}).get("full_name")
+			path = item.get("path", "")
+			if full:
+				open_repo(self, full, path=path)
+
+
+def show_explore(parent=None, initial_query=""):
+	show_modal(SearchDialog(parent, initial_query))
+
+
+# ----------------------------------------------------------------------
+# gists.py: Your gists: list, read, create (from the clipboard too), edit and delete.
+# ----------------------------------------------------------------------
+
+def gist_label(g):
+	files = list((g.get("files") or {}).keys())
+	title = g.get("description") or (files[0] if files else _("Untitled"))
+	count = len(files)
+	return _("{title}, {count} files, {visibility}, updated {date}").format(
+		title=title, count=count, visibility=_("public") if g.get("public") else _("secret"),
+		date=format_date(g.get("updated_at")),
+	)
+
+
+def gist_text(g):
+	lines = [
+		g.get("description") or _("No description"),
+		_("{visibility} gist. Updated {date}.").format(
+			visibility=_("Public") if g.get("public") else _("Secret"), date=format_date(g.get("updated_at"))
+		),
+		_("Link: {url}").format(url=g.get("html_url")),
+	]
+	for name, f in (g.get("files") or {}).items():
+		lines += ["", _("----- File: {name} -----").format(name=name), f.get("content") or _("(content not available)")]
+	return "\n".join(lines)
+
+
+def fetch_full_gist(gist_id):
+	"""A gist with the complete text of every file (large files are fetched from raw_url)."""
+	res = gh("GET", f"/gists/{gist_id}")
+	if not res.ok or not isinstance(res.data, dict):
+		return res
+	for f in (res.data.get("files") or {}).values():
+		if f.get("truncated") and f.get("raw_url"):
+			raw = gh("GET", f["raw_url"], accept="text/plain", auth=False, binary=True, timeout=60)
+			if raw.ok and isinstance(raw.data, bytes):
+				f["content"] = raw.data.decode("utf-8", "replace")
+				f["truncated"] = False
+	return res
+
+
+def show_gists(parent):
+	def fetch(page, selections):
+		return gh("GET", "/gists", params={"per_page": items_per_page(), "page": page})
+
+	def view(dlg, g):
+		ui.message(_("Loading gist..."))
+
+		def done(res):
+			if not res.ok:
+				ui.message(_("Could not load the gist.") + " " + res.message)
+				return
+			full = res.data
+			everything = "\n\n".join(f.get("content") or "" for f in (full.get("files") or {}).values())
+			show_modal(TextViewDialog(
+				dlg, _("Gist"), gist_text(full),
+				buttons=[
+					(_("Copy &Content"), lambda d: copy_to_clipboard(everything, _("Gist content copied."))),
+					(_("Copy &Link"), lambda d: copy_to_clipboard(full.get("html_url", ""), _("Link copied."))),
+					(_("Open in &Browser"), lambda d: open_url(full.get("html_url"))),
+				],
+				label=_("Gist &contents:"), wrap=False,
+			))
+
+		dlg.run(lambda: fetch_full_gist(g["id"]), done)
+
+	def new_gist(dlg, _item):
+		values = ask_form(
+			dlg, _("New Gist"),
+			[
+				(_("&Description (optional):"), "desc", False, ""),
+				(_("File &name:"), "name", False, "snippet.txt", True),
+				(_("&Content (filled from the clipboard):"), "content", True, get_clipboard_text(), True),
+			],
+			checks=[(_("Make this gist &public (otherwise it is secret)"), "public", False)],
+			ok_label=_("&Create Gist"),
+		)
+		if not values:
+			return
+		body = {
+			"description": values["desc"].strip(), "public": values["public"],
+			"files": {values["name"].strip(): {"content": values["content"]}},
+		}
+		ui.message(_("Creating gist..."))
+
+		def done(res):
+			if res.ok:
+				copy_to_clipboard(res.data.get("html_url", ""), _("Gist created. Link copied to the clipboard."))
+				dlg.load(1)
+			else:
+				ui.message(_("Could not create the gist.") + " " + res.message)
+
+		dlg.run(lambda: gh("POST", "/gists", body=body), done)
+
+	def edit(dlg, g):
+		ui.message(_("Loading gist..."))
+
+		def loaded(res):
+			if not res.ok:
+				ui.message(_("Could not load the gist.") + " " + res.message)
+				return
+			files = res.data.get("files") or {}
+			if len(files) != 1:
+				ui.message(_("This gist has several files. Edit it in the browser."))
+				open_url(res.data.get("html_url"))
+				return
+			name, f = next(iter(files.items()))
+			if f.get("truncated"):
+				ui.message(_("This file is too large to edit here. Edit it in the browser."))
+				open_url(res.data.get("html_url"))
+				return
+			values = ask_form(
+				dlg, _("Edit Gist"),
+				[
+					(_("&Description:"), "desc", False, res.data.get("description") or ""),
+					(_("&Content of {name}:").format(name=escape_label(name)), "content", True, f.get("content") or "", True),
+				],
+				ok_label=_("&Save"),
+			)
+			if not values:
+				return
+
+			def saved(result):
+				if result.ok:
+					ui.message(_("Gist saved."))
+					dlg.reload()
+				else:
+					ui.message(_("Could not save the gist.") + " " + result.message)
+
+			body = {"description": values["desc"].strip(), "files": {name: {"content": values["content"]}}}
+			dlg.run(lambda: gh("PATCH", f"/gists/{g['id']}", body=body), saved)
+
+		dlg.run(lambda: fetch_full_gist(g["id"]), loaded)
+
+	def delete(dlg, g):
+		if not confirm_typed(dlg, _("Delete Gist"), _("This permanently deletes the gist."), "DELETE"):
+			ui.message(_("Deletion cancelled."))
+			return
+
+		def done(res):
+			if res.ok:
+				ui.message(_("Gist deleted."))
+				dlg.reload()
+			else:
+				ui.message(_("Could not delete the gist.") + " " + res.message)
+
+		dlg.run(lambda: gh("DELETE", f"/gists/{g['id']}"), done)
+
+	actions = [
+		(_("&View Gist"), view),
+		(_("&New Gist"), new_gist, False),
+		(_("&Edit Gist"), edit),
+		(_("&Delete Gist"), delete),
+		(_("Open in &Browser"), lambda d, g: open_url(g.get("html_url"))),
+	]
+	show_modal(PagedListDialog(
+		parent, _("My Gists"), fetch, gist_label, actions,
+		empty=_("You have no gists. Choose New Gist to create one."),
+	))
+
+
+# ----------------------------------------------------------------------
+# status.py: API usage: how many requests GitHub still allows.
+# ----------------------------------------------------------------------
+
+def describe(resources):
+	"""Readable lines from the /rate_limit 'resources' mapping."""
+	names = {
+		"core": _("General requests"), "search": _("Searches"), "code_search": _("Code searches"),
+		"graphql": _("GraphQL"), "actions_runner_registration": _("Actions"),
+	}
+	lines = []
+	now = time.time()
+	for key, label in names.items():
+		item = resources.get(key)
+		if not item:
+			continue
+		minutes = max(0, int((item.get("reset", now) - now) // 60))
+		lines.append(_("{label}: {remaining} of {limit} left. Resets in {minutes} minutes.").format(
+			label=label, remaining=item.get("remaining", 0), limit=item.get("limit", 0), minutes=minutes
+		))
+	return lines
+
+
+def show_status(parent):
+	def work():
+		res = gh("GET", "/rate_limit")
+		if not res.ok:
+			return res
+		user = gh("GET", "/user")
+		return Result(200, (res.data, user.data if user.ok else None), {})
+
+	def done(res):
+		from .core import say
+		if not res.ok:
+			say(_("Could not check GitHub.") + " " + res.message)
+			return
+		data, user = res.data
+		lines = [_("Signed in as {name}.").format(name=user.get("login")) if user else _("Not signed in. Requests are limited.")]
+		lines += describe((data or {}).get("resources", {}))
+		show_modal(TextViewDialog(parent, _("GitHub Status"), "\n".join(lines), label=_("&Status:")))
+
+	run_async(work, done)
+
+
+# ----------------------------------------------------------------------
+# mainmenu.py: The main menu window.
+# ----------------------------------------------------------------------
+
+def user_guide_path():
+	"""The user guide, doc/en/readme.html inside the add-on. It opens in the browser."""
+	path = addonHandler.getCodeAddon().path
+	for language in ("en",):
+		candidate = os.path.join(path, "doc", language, "readme.html")
+		if os.path.isfile(candidate):
+			return candidate
+	return ""
+
+
+def needs_token(parent, action):
+	"""Wrap a menu action so it first checks that a token exists."""
+	def run():
+		if require_token(parent):
+			action()
+	return run
+
+
+class MainMenuDialog(AccessibleDialog):
+	def __init__(self, parent):
+		super().__init__(parent, _("GitHub for NVDA"), (440, 520), resizable=False)
+		sizer = wx.BoxSizer(wx.VERTICAL)
+		sizer.Add(wx.StaticText(self, label=_("&Menu:")), 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+		entries = [
+			(_("My Profile"), needs_token(self, lambda: show_profile(self))),
+			(_("My Work"), needs_token(self, lambda: show_my_work(self))),
+			(_("My Repositories"), needs_token(self, lambda: show_my_repos(self))),
+			(_("GitHub Settings"), needs_token(self, lambda: show_settings_menu(self))),
+			(_("Search Public Repositories"), lambda: show_explore(self)),
+			(_("Open Link or Repository"), self.open_by_name),
+			(_("Notifications"), needs_token(self, lambda: show_notifications(self))),
+			(_("Gists"), needs_token(self, lambda: show_gists(self))),
+			(_("Bookmarked Repositories"), lambda: show_bookmarks(self)),
+			(_("GitHub Status"), lambda: show_status(self)),
+		]
+		docs = user_guide_path()
+		if docs:
+			entries.append((_("User Guide in Browser"), lambda: os.startfile(docs) if hasattr(os, "startfile") else None))
+		self.entries = entries
+		# The options are one list: Up/Down to move, Enter to open. Exit is a separate button after it (Tab).
+		self.listbox = wx.ListBox(self, choices=[label for label, _action in entries], size=(400, 300))
+		self.listbox.SetSelection(0)
+		self.listbox.enter_action = self.choose
+		self.listbox.Bind(wx.EVT_LISTBOX_DCLICK, lambda e: self.choose())
+		sizer.Add(self.listbox, 1, wx.EXPAND | wx.ALL, 8)
+		sizer.Add(self.close_button(_("E&xit")), 0, wx.ALIGN_RIGHT | wx.ALL, 8)
+		self.layout(sizer, fit=True, focus=self.listbox)
+
+	def choose(self):
+		index = self.listbox.GetSelection()
+		if index != wx.NOT_FOUND:
+			self.entries[index][1]()
+
+	def open_by_name(self):
+		clip = get_clipboard_text().strip()
+		start = clip if clip and len(clip) < 300 and parse_github_link(clip) else ""
+		text = prompt_text(self, _("Open Link or Repository"), _("Repository &name (owner/repo), user name, or GitHub link:"), start)
+		if not text:
+			return
+		if not open_link(self, text.strip()):
+			if text.strip() and "/" not in text and " " not in text.strip():
+				from .profile import show_user
+				show_user(self, text.strip().lstrip("@"))
+			else:
+				ui.message(_("Enter a repository as owner/repo, for example nvaccess/nvda, or paste a GitHub link."))
+
+
+def open_main_dialog():
+	show_modal(MainMenuDialog(gui.mainFrame))
