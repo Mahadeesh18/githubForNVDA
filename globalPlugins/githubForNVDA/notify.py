@@ -24,7 +24,7 @@ from .core import (
 	ask_form,
 	config_dir,
 	confirm,
-	confirm_typed,
+	confirm_danger,
 	copy_to_clipboard,
 	delete_token,
 	escape_label,
@@ -53,6 +53,7 @@ from .core import (
 	say,
 	set_pref,
 	show_modal,
+	subject_type_label,
 	TextViewDialog,
 )
 from .repos import (
@@ -90,9 +91,11 @@ def reasons():
 def notification_label(n):
 	subject = n.get("subject") or {}
 	state = _("unread") if n.get("unread") else _("read")
+	# Translators: one notification in a list. {type} is issue, pull request..., {reason} why you got it
+	# (such as "you were mentioned"), {state} is read or unread.
 	return _("{repo}: {title}, {type}, {reason}, {state}, {date}").format(
 		repo=(n.get("repository") or {}).get("full_name", ""), title=subject.get("title", ""),
-		type=subject.get("type", ""), reason=reasons().get(n.get("reason"), n.get("reason", "")),
+		type=subject_type_label(subject.get("type")), reason=reasons().get(n.get("reason"), n.get("reason", "")),
 		state=state, date=format_date(n.get("updated_at")),
 	)
 
@@ -494,14 +497,15 @@ class NotificationMonitor:
 			return
 		mode = get_pref("notificationFilter")
 		wanted = [n for n in fresh if matches_filter(n, mode)]
+		unread = len(res.data)
 		if manual:
 			# Speak at once from this thread (say() is thread safe) instead of hopping through the GUI loop.
 			if not was_primed:
-				say(unread_message(len(res.data), res.has_next))
+				say(unread_message(unread, res.has_next))
 			elif wanted:
 				self._announce(wanted, force=True)
 			else:
-				say(_("No new GitHub notifications.") + " " + unread_message(len(res.data), res.has_next))
+				say(_("No new GitHub notifications.") + " " + unread_message(unread, res.has_next))
 			return
 		if was_primed and wanted:
 			self._announce(wanted)
@@ -1136,7 +1140,7 @@ def show_gists(parent):
 		def done(res):
 			if res.ok:
 				copy_to_clipboard(res.data.get("html_url", ""), _("Gist created. Link copied to the clipboard."))
-				dlg.load(1)
+				dlg.reload()
 			else:
 				ui.message(_("Could not create the gist.") + " " + res.message)
 
@@ -1183,7 +1187,7 @@ def show_gists(parent):
 		dlg.run(lambda: fetch_full_gist(g["id"]), loaded)
 
 	def delete(dlg, g):
-		if not confirm_typed(dlg, _("Delete Gist"), _("This permanently deletes the gist."), "DELETE"):
+		if not confirm_danger(dlg, _("Delete Gist"), _("This permanently deletes the gist.")):
 			ui.message(_("Deletion cancelled."))
 			return
 
@@ -1215,20 +1219,23 @@ def show_gists(parent):
 # ----------------------------------------------------------------------
 
 def describe(resources):
-	"""Readable lines from the /rate_limit 'resources' mapping."""
+	"""Readable lines from the /rate_limit 'resources' mapping: the well-known kinds first, then the rest."""
 	names = {
 		"core": _("General requests"), "search": _("Searches"), "code_search": _("Code searches"),
-		"graphql": _("GraphQL"), "actions_runner_registration": _("Actions"),
+		"graphql": _("GraphQL"), "actions_runner_registration": _("Actions runner registration"),
+		"integration_manifest": _("App manifests"), "source_import": _("Source imports"),
+		"code_scanning_upload": _("Code scanning uploads"), "dependency_snapshots": _("Dependency snapshots"),
+		"scim": _("SCIM"), "audit_log": _("Audit log"),
 	}
+	order = [k for k in names if k in resources] + sorted(k for k in resources if k not in names)
 	lines = []
 	now = time.time()
-	for key, label in names.items():
-		item = resources.get(key)
-		if not item:
-			continue
+	for key in order:
+		item = resources.get(key) or {}
 		minutes = max(0, int((item.get("reset", now) - now) // 60))
 		lines.append(_("{label}: {remaining} of {limit} left. Resets in {minutes} minutes.").format(
-			label=label, remaining=item.get("remaining", 0), limit=item.get("limit", 0), minutes=minutes
+			label=names.get(key, key.replace("_", " ")), remaining=item.get("remaining", 0),
+			limit=item.get("limit", 0), minutes=minutes,
 		))
 	return lines
 
@@ -1242,7 +1249,6 @@ def show_status(parent):
 		return Result(200, (res.data, user.data if user.ok else None), {})
 
 	def done(res):
-		from .core import say
 		if not res.ok:
 			say(_("Could not check GitHub.") + " " + res.message)
 			return
@@ -1259,9 +1265,14 @@ def show_status(parent):
 # ----------------------------------------------------------------------
 
 def user_guide_path():
-	"""The user guide, doc/en/readme.html inside the add-on. It opens in the browser."""
+	"""The user guide in NVDA's language (doc/<language>/readme.html), else the English one. It opens in the browser."""
 	path = addonHandler.getCodeAddon().path
-	for language in ("en",):
+	try:
+		import languageHandler
+		language = languageHandler.getLanguage()
+	except Exception:
+		language = "en"
+	for language in (language, language.split("_")[0], "en"):
 		candidate = os.path.join(path, "doc", language, "readme.html")
 		if os.path.isfile(candidate):
 			return candidate

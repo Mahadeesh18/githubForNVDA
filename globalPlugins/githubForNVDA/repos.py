@@ -29,7 +29,7 @@ from .core import (
 	clean_branch_name,
 	config_dir,
 	confirm,
-	confirm_typed,
+	confirm_danger,
 	copy_to_clipboard,
 	decode_text,
 	downloads_dir,
@@ -48,6 +48,7 @@ from .core import (
 	PAD,
 	PagedListDialog,
 	parse_github_link,
+	Problem,
 	prompt_text,
 	Result,
 	run_async,
@@ -190,7 +191,7 @@ def tree_items(full, ref, path):
 	if not res.ok or not isinstance(res.data, dict):
 		return res
 	if res.data.get("truncated"):
-		return Result(0, "This repository is too large to list in one request.", {})
+		return Problem(_("This repository is too large to list in one request. Use the browser for this."))
 	prefix = path.strip("/")
 	items = [
 		e for e in res.data.get("tree", [])
@@ -744,12 +745,11 @@ def show_releases(parent, full, can_write=False, branch=""):
 		create_release(dlg, full, branch, dlg.reload)
 
 	def delete(dlg, r):
-		if not confirm_typed(
+		if not confirm_danger(
 			dlg, _("Delete Release"),
 			_("This deletes the release {name}. The tag stays in the repository.").format(
 				name=r.get("name") or r.get("tag_name")
 			),
-			"DELETE",
 		):
 			ui.message(_("Deletion cancelled."))
 			return
@@ -1558,12 +1558,11 @@ class ItemActions:
 	def delete_folder(self, entry):
 		d = self.dlg
 		full, ref, path = self.full, self.ref, entry["path"]
-		if not confirm_typed(
+		if not confirm_danger(
 			d, _("Delete Folder"),
 			_("This deletes the folder {path} and everything in it from branch {branch}. It creates a commit and can be restored from history.").format(
 				path=path, branch=ref
 			),
-			entry["name"],
 		):
 			ui.message(_("Deletion cancelled."))
 			return
@@ -1713,9 +1712,9 @@ class RepoActions:
 	def delete(self):
 		if not self._need_admin():
 			return
-		if not confirm_typed(
+		if not confirm_danger(
 			self.dialog, _("Delete Repository"),
-			_("This permanently deletes {name} and cannot be undone.").format(name=self.full), self.repo["name"],
+			_("This permanently deletes {name} and cannot be undone.").format(name=self.full),
 		):
 			ui.message(_("Deletion cancelled."))
 			return
@@ -2228,9 +2227,9 @@ class RepoBrowserDialog(AccessibleDialog):
 		if not self.ref or self.ref == default:
 			ui.message(_("The default branch cannot be deleted. Switch to another branch first."))
 			return
-		if not confirm_typed(
+		if not confirm_danger(
 			self, _("Delete Branch"),
-			_("This permanently deletes the branch {name}.").format(name=self.ref), self.ref,
+			_("This permanently deletes the branch {name}.").format(name=self.ref),
 		):
 			ui.message(_("Deletion cancelled."))
 			return

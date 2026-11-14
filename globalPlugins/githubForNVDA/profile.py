@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from logHandler import log
 
 from .core import (
+	account_type_label,
 	AccessibleDialog,
 	apply_access_keys,
 	ask_form,
@@ -23,6 +24,7 @@ from .core import (
 	current_login,
 	forget_identity,
 	format_datetime,
+	format_month,
 	FormDialog,
 	gh,
 	gh_paged,
@@ -34,10 +36,12 @@ from .core import (
 	open_url,
 	PAD,
 	PagedListDialog,
+	Problem,
 	prompt_text,
 	Result,
 	show_modal,
 	TextViewDialog,
+	weekday_name,
 )
 from .repos import (
 	q,
@@ -50,9 +54,6 @@ addonHandler.initTranslation()
 # ----------------------------------------------------------------------
 # profileextras.py: The extra parts of My GitHub Profile: pinned repositories, contribution graph, organizations,
 # ----------------------------------------------------------------------
-
-_WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-
 
 # ----------------------------------------------------------------------
 # GraphQL
@@ -124,7 +125,7 @@ mutation($emoji: String, $message: String, $expires: DateTime, $busy: Boolean) {
 # Loading the summary shown in the profile text
 # ----------------------------------------------------------------------
 
-def load_extras(login, plan_name="", own=True):
+def load_extras(login, own=True):
 	"""Fetch everything the profile text needs. Any part that fails is None (shown as unavailable)."""
 
 	def summary():
@@ -143,12 +144,11 @@ def load_extras(login, plan_name="", own=True):
 			res = gh_paged(f"/users/{q(login)}/social_accounts", max_items=200)
 		return res.data if res.ok and isinstance(res.data, list) else None
 
-	def achievements():
-		return fetch_achievements(login, plan_name)
-
+	# Achievements are not loaded here: GitHub has no API for them, so they are read from the profile web page,
+	# which is slow. That only happens when View Achievements and Badges is chosen.
 	extras = {}
-	jobs = {"summary": summary, "orgs": orgs, "social": social, "achievements": achievements}
-	with ThreadPoolExecutor(max_workers=4) as pool:
+	jobs = {"summary": summary, "orgs": orgs, "social": social}
+	with ThreadPoolExecutor(max_workers=3) as pool:
 		futures = {name: pool.submit(job) for name, job in jobs.items()}
 		for name, future in futures.items():
 			try:
@@ -185,12 +185,10 @@ def extra_rows(extras):
 	summary = extras.get("summary")
 	pinned = ((summary or {}).get("pinnedItems") or {}).get("totalCount") if summary else None
 	orgs = extras.get("orgs")
-	badges = extras.get("achievements")
 	social = extras.get("social")
 	return [
 		(_("Pinned Repositories"), count_text(pinned)),
 		(_("Organizations"), count_text(len(orgs) if orgs is not None else None)),
-		(_("Achievements and Badges"), count_text(len(badges) if badges is not None else None)),
 		(_("Status"), status_text(summary) or _("unavailable")),
 		(_("Social Media Links"), count_text(len(social) if social is not None else None)),
 	]
@@ -280,11 +278,7 @@ def contribution_text(calendar):
 	for d in days:
 		months[d["date"][:7]] = months.get(d["date"][:7], 0) + d["contributionCount"]
 	for key, count in months.items():
-		try:
-			name = datetime.strptime(key, "%Y-%m").strftime("%B %Y")
-		except ValueError:
-			name = key
-		lines.append(f"{name}: {count}")
+		lines.append(f"{format_month(key)}: {count}")
 
 	lines += ["", _("Contributions by week:")]
 	for week in weeks:
@@ -292,7 +286,7 @@ def contribution_text(calendar):
 			continue
 		count = sum(d["contributionCount"] for d in week)
 		detail = ", ".join(
-			f"{_WEEKDAYS[d.get('weekday', 0) % 7]} {d['contributionCount']}" for d in week
+			f"{weekday_name(d.get('weekday', 0))} {d['contributionCount']}" for d in week
 		)
 		lines.append(_("Week of {date}: {count} contributions. {detail}").format(date=week[0]["date"], count=count, detail=detail))
 	return "\n".join(lines)
@@ -510,14 +504,6 @@ def load_achievements(login, plan_name=""):
 	return items, ""
 
 
-def fetch_achievements(login, plan_name=""):
-	"""Achievements and badges as a list of {"name", "kind", "tier"}, or None when they cannot be read.
-
-	GitHub offers no API for these, so the public profile page is read.
-	"""
-	return load_achievements(login, plan_name)[0]
-
-
 def achievement_label(item):
 	parts = [item["name"], item["kind"]]
 	if item.get("tier"):
@@ -525,21 +511,11 @@ def achievement_label(item):
 	return ", ".join(parts)
 
 
-class _Problem(Result):
-	"""A failed result that speaks its own explanation instead of a generic network error."""
-
-	__slots__ = ()
-
-	@property
-	def message(self):
-		return self.data
-
-
 def show_achievements(parent, login, plan_name=""):
 	def fetch(page, selections):
 		items, problem = load_achievements(login, plan_name)
 		if items is None:
-			return _Problem(0, problem, {})
+			return Problem(problem)
 		return local_fetch(items)(page, selections)
 
 	actions = [
@@ -741,7 +717,7 @@ def public_email(p, emails=None):
 def profile_text(p, starred, emails=None, extras=None):
 	plan = ((p.get("plan") or {}).get("name") or _("free")).capitalize()
 	rows = [
-		(_("Username"), p.get("login")), (_("Account type"), p.get("type", "User")),
+		(_("Username"), p.get("login")), (_("Account type"), account_type_label(p.get("type"))),
 		(_("Name"), p.get("name") or _("not set")),
 		(_("Email"), public_email(p, emails) or _("not public (use Edit Email to make it public)")),
 		(_("Bio"), p.get("bio") or _("not set")),
@@ -823,8 +799,7 @@ class ProfileDialog(AccessibleDialog):
 			# Needs the user:email permission; without it the email falls back to what /user reports.
 			emails = gh("GET", "/user/emails")
 			listed = emails.data if emails.ok and isinstance(emails.data, list) else []
-			plan = ((me.data.get("plan") or {}).get("name") or "") if isinstance(me.data, dict) else ""
-			extras = load_extras(me.data.get("login", "") if isinstance(me.data, dict) else "", plan)
+			extras = load_extras(me.data.get("login", "") if isinstance(me.data, dict) else "")
 			return Result(200, (me.data, last_page(stars.headers, fallback), listed, extras), {})
 
 		def done(res):
@@ -968,7 +943,7 @@ def show_profile(parent=None):
 # ----------------------------------------------------------------------
 
 def user_text(u, extras=None, starred=None):
-	kind = u.get("type", "User")
+	kind = account_type_label(u.get("type"))
 	rows = [
 		(_("Username"), u.get("login")),
 		(_("Account type"), kind),
@@ -1132,7 +1107,7 @@ class UserDialog(AccessibleDialog):
 		def work():
 			res = gh("GET", f"/users/{q(self.login)}")
 			if res.ok and res.data.get("type") == "User":
-				self.extras = load_extras(self.login, "", own=False)
+				self.extras = load_extras(self.login, own=False)
 				stars = gh("GET", f"/users/{q(self.login)}/starred", params={"per_page": 1})
 				if stars.ok and isinstance(stars.data, list):
 					self.starred = last_page(stars.headers, len(stars.data))
@@ -1355,7 +1330,7 @@ def show_emails(parent):
 			return
 		target = "private" if e.get("visibility") == "public" else "public"
 		_do(dlg, lambda: gh("PATCH", "/user/email/visibility", body={"visibility": target}),
-			_("Your primary email address is now {state}.").format(state=_(target)),
+			_("Your primary email address is now private.") if target == "private" else _("Your primary email address is now public."),
 			_("Could not change the email visibility."), "user:email")
 
 	actions = [
@@ -1613,7 +1588,7 @@ def show_codespaces_secrets(parent):
 
 	def label(s):
 		return _("{name}, updated {date}, for {who}").format(
-			name=s.get("name", ""), date=format_datetime(s.get("updated_at")), who=s.get("visibility", ""))
+			name=s.get("name", ""), date=format_datetime(s.get("updated_at")), who={"all": _("all repositories"), "private": _("private repositories"), "selected": _("selected repositories")}.get(s.get("visibility"), s.get("visibility", "")))
 
 	def delete(dlg, s):
 		if confirm(dlg, _("Delete the secret {name}?").format(name=s["name"]), _("Delete Secret"), warning=True, default_no=True):
@@ -1628,7 +1603,7 @@ def show_codespaces_secrets(parent):
 
 
 # ======================================================================
-# Account overview and API limits
+# Account overview
 # ======================================================================
 
 def show_account_overview(parent):
@@ -1643,7 +1618,7 @@ def show_account_overview(parent):
 		two = p.get("two_factor_authentication")
 		rows = [
 			(_("Username"), p.get("login")),
-			(_("Account type"), p.get("type", "User")),
+			(_("Account type"), account_type_label(p.get("type"))),
 			(_("GitHub plan"), (plan.get("name") or _("free")).capitalize()),
 			(_("Two-factor authentication"), _("on") if two else _("off") if two is not None else _("unknown")),
 			(_("Disk space used"), _("{size} megabytes").format(size=round((p.get("disk_usage") or 0) / 1024.0, 1))),
@@ -1666,25 +1641,6 @@ def show_account_overview(parent):
 			]))
 
 	parent.run(lambda: gh("GET", "/user"), done)
-
-
-def show_rate_limit(parent):
-	ui.message(_("Loading..."))
-
-	def done(res):
-		if not res.ok or not isinstance(res.data, dict):
-			ui.message(_("Could not read the limits.") + " " + res.message)
-			return
-		lines = [_("How many requests this add-on may still send to GitHub:")]
-		for name, info in sorted((res.data.get("resources") or {}).items()):
-			reset = datetime.fromtimestamp(info.get("reset", 0)).strftime("%I:%M %p") if info.get("reset") else "-"
-			lines.append(_("{name}: {left} of {total} left, resets at {when}").format(
-				name=name, left=info.get("remaining", 0), total=info.get("limit", 0), when=reset))
-		text = "\n".join(lines)
-		show_modal(TextViewDialog(parent, _("API Limits"), text, label=_("&Limits:"),
-			buttons=[(_("Copy &Details"), lambda d: copy_to_clipboard(text, _("Copied.")))]))
-
-	parent.run(lambda: gh("GET", "/rate_limit"), done)
 
 
 # ======================================================================
@@ -1765,7 +1721,6 @@ class SettingsMenuDialog(AccessibleDialog):
 			(_("Temporary Interaction Limits"), lambda: edit_interaction_limits(p)),
 			(_("Watched Repositories"), lambda: show_watching(p)),
 			(_("Codespaces Secrets"), lambda: show_codespaces_secrets(p)),
-			(_("API Limits"), lambda: show_rate_limit(p)),
 			(_("More Settings on GitHub.com"), lambda: show_website_pages(p)),
 		]
 		self.listbox = wx.ListBox(self, choices=[label for label, _action in self.entries], size=(480, 380))
