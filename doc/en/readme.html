@@ -29,7 +29,7 @@ a { color: #0b4fb3; }
 <p>GitHub for NVDA lets you use GitHub with NVDA through ordinary, fully labelled Windows windows. Browse repositories and files, work with issues and pull requests, watch GitHub Actions, read notifications, manage gists and releases, and more, without needing the GitHub website.</p>
 <p>This add-on sets no keyboard shortcut of its own. Give the commands you want a key yourself in NVDA menu, Preferences, Input gestures, <em>GitHub for NVDA</em>. See <a href="#nokey">Commands and their shortcuts</a>.</p>
 <ul>
-<li>Requires NVDA 2024.1 or later (tested up to 2026.2, including 64-bit NVDA)</li>
+<li>Requires NVDA 2026.2 or later (tested up to 2026.3, including 64-bit NVDA)</li>
 <li>Author: Mahadeesh</li>
 <li>License: GPL v2</li>
 </ul>
@@ -103,7 +103,17 @@ a { color: #0b4fb3; }
 <p>None of these commands has a key until you give it one. Users choose their own keys in NVDA menu, Preferences, Input gestures, <em>GitHub for NVDA</em>, so the add-on never clashes with other add-ons or with your own keys:</p>
 <ul>
 <li>Open the GitHub for NVDA main menu</li>
+<li>Open your notifications</li>
 <li>Announce how many unread notifications you have</li>
+<li>Check for new notifications now and say what was found</li>
+<li>Pause or resume the spoken announcements of new notifications</li>
+<li>Open My Work</li>
+<li>Open My Repositories</li>
+<li>Open Search Public Repositories</li>
+<li>Open a link or repository (a GitHub link on the clipboard is filled in)</li>
+<li>Open your bookmarked repositories</li>
+<li>Open your gists</li>
+<li>Open your profile</li>
 <li>Open the What's New page</li>
 </ul>
 
@@ -127,6 +137,7 @@ a { color: #0b4fb3; }
 <h3>My Work</h3>
 <p>Shows what needs you across all of GitHub: items assigned to you, pull requests waiting for your review, your open pull requests and issues, items that mention you, and what you recently finished.</p>
 <h3>My Repositories</h3>
+<p>The list has the repositories you own, the ones you were added to as a collaborator and the ones of your organizations. GitHub does not list other repositories you can only read, such as a public repository you cloned: find those with Starred Repositories, Watched Repositories, Bookmarks or Open Link or Repository. If an organization uses single sign-on and your token is not authorized for it, its repositories are missing and the add-on says so: open github.com/settings/tokens, choose Configure SSO next to the token and authorize it.</p>
 <p>The Sort by box and the Search box are the first two stops, then the list. You can sort by name, recently updated, private, public, forks or archived, open, create (with an optional licence) and delete. Press <code>Enter</code> on a repository to open it and <code>Delete</code> to delete it (you are asked a Yes/No question first, and it starts on No). The <code>Applications</code> key opens a menu with:</p>
 <ul>
 <li>Open Repository, Rename, Edit Description, Edit Topics, Edit Website Address (with maintain or admin access) and Delete</li>
@@ -139,13 +150,14 @@ a { color: #0b4fb3; }
 <h3>Open Link or Repository</h3>
 <p>Understands <code>owner/repo</code>, a user name, and links to repositories, folders, files, issues, pull requests, commits and workflow runs. If the clipboard holds a GitHub link it is filled in for you.</p>
 <h3>Notifications</h3>
-<p>Unread only, all, or only unread notifications that involve you directly (assigned, mentioned, review requested and so on). Copy Link puts the web address of the notification on the clipboard. View opens issues and pull requests directly and marks them read. Also mark as read, mark as done, mute a thread and mark everything as read.</p>
+<p>Show unread only, all except done, only unread notifications that involve you directly (assigned, mentioned, review requested and so on), or <strong>Done</strong>. Copy Link puts the web address of the notification on the clipboard. View opens issues and pull requests directly and marks them read. Also mark as read, mute a thread and mark everything as read.</p>
+<p><strong>Mark as Done</strong> takes a notification out of your lists, so what is left is what still needs you. GitHub does not tell other programs which notifications are done, so the add-on remembers this on your computer. A done notification comes back by itself when something new happens in it, the same as on the GitHub website. <strong>Show: Done</strong> lists the ones you finished; there the button is <strong>Move Back to Inbox</strong>. Muting a thread also marks it done.</p>
 <h3>Gists</h3>
 <p>List, view every file, create (filled from the clipboard, secret unless you tick public), edit single-file gists and delete.</p>
 <h3>Bookmarked Repositories</h3>
 <p>Bookmarks are saved on your computer and follow a repository when you rename it.</p>
 <h3>GitHub Status</h3>
-<p>Shows who you are signed in as and how many requests GitHub still allows.</p>
+<p>Shows who you are signed in as and how many requests GitHub still allows of every kind (general requests, searches, GraphQL and so on).</p>
 
 <h2 id="profile">My Profile</h2>
 <p>The profile text lists your username, name, email (shown as public only when it is), bio, company, location, website, repository and gist counts, followers and following. After Following come five extra lines. Press <code>Tab</code> from the text to reach the matching buttons, in the same order.</p>
@@ -156,7 +168,7 @@ a { color: #0b4fb3; }
 <tr><td>Pinned Repositories: number</td><td>View Pinned Repositories</td><td>Lists them. Open, open in browser, bookmark or copy the link.</td></tr>
 <tr><td>(none)</td><td>View Contribution Graph</td><td>Opens a read-only text page: yearly total, days with contributions, busiest day, longest and current streak, totals by month and one line per week.</td></tr>
 <tr><td>Organizations: number</td><td>View Organizations</td><td>Lists your organizations. View a profile, view its repositories or open it in the browser.</td></tr>
-<tr><td>Achievements and Badges: number</td><td>View Achievements and Badges</td><td>Lists them. GitHub has no API for this, so the list is read from the public profile page (achievements with their level, plus Pro and Developer Program Member badges). If GitHub cannot be read, the reason is spoken, and Open in Browser always shows the full list.</td></tr>
+<tr><td>(none)</td><td>View Achievements and Badges</td><td>Lists them. GitHub has no API for this, so the list is read from the public profile page when you choose this button (not every time the profile opens, which keeps it fast) (achievements with their level, plus Pro and Developer Program Member badges). If GitHub cannot be read, the reason is spoken, and Open in Browser always shows the full list.</td></tr>
 <tr><td>Status: your status</td><td>Edit Status</td><td>Message, emoji, busy checkbox and when to clear it. Leave message and emoji empty to clear your status.</td></tr>
 <tr><td>Social Media Links: number</td><td>View Social Media Links</td><td>Lists your links. Open in browser or copy the link.</td></tr>
 </tbody>
@@ -179,13 +191,12 @@ a { color: #0b4fb3; }
 <li><strong>Account Overview and Plan</strong>: your plan, two-factor authentication on or off, disk space, private repository limits.</li>
 <li><strong>Email Addresses</strong>: add and delete addresses, make the primary address public or private.</li>
 <li><strong>SSH Keys</strong>, <strong>SSH Signing Keys</strong> and <strong>GPG Keys</strong>: list, add, copy and delete.</li>
-<li><strong>Organization Memberships</strong>: make your membership public or private, accept an invitation.</li>
-<li><strong>Repository Invitations</strong>: accept or decline.</li>
+<li><strong>Organization Memberships</strong>: view an organization's repositories or profile, make your membership public or private, accept an invitation.</li>
+<li><strong>Repository Invitations</strong>: accept, decline or open the repository.</li>
 <li><strong>Blocked Users</strong>: block and unblock people.</li>
 <li><strong>Temporary Interaction Limits</strong>: limit who can interact with your public repositories for 24 hours up to 6 months.</li>
-<li><strong>Watched Repositories</strong> (with Unwatch).</li>
+<li><strong>Watched Repositories</strong>: Enter opens a repository in the repository browser. Issues and Pull Requests open its lists directly; Unwatch stops watching it.</li>
 <li><strong>Codespaces Secrets</strong>: see the names and delete them. Adding a secret needs encryption that NVDA does not have, so that opens GitHub.</li>
-<li><strong>API Limits</strong>: how many requests you have left.</li>
 <li><strong>More Settings on GitHub.com</strong>: everything GitHub only allows on its website (password, two-factor authentication, sessions, notifications, billing, appearance, developer settings and more). Enter opens the page in your browser.</li>
 </ul>
 <p>If GitHub says permission denied, your token is missing a permission: use <strong>Create new personal access token</strong> in NVDA Settings, <em>GitHub for NVDA</em>, which ticks all of them.</p>
@@ -239,7 +250,7 @@ a { color: #0b4fb3; }
 </ul>
 
 <h2 id="issues">Issues and pull requests</h2>
-<p>Open one to read the description, comments, reviews, code comments and changed files as text. You can add comments, close or reopen (issues ask whether it was completed or not planned), submit a review (comment, approve or request changes) and merge by merge commit, squash or rebase. <strong>More Actions</strong> edits the title and description, labels and assignees, and locks or unlocks the conversation. <strong>New Pull Request</strong> is in the pull request list.</p>
+<p>Open one to read the description, comments, reviews, code comments and changed files as text. You can add comments, close or reopen (issues ask whether it was completed or not planned), submit a review (comment, approve or request changes) and merge. Merge only offers the methods the repository allows (merge commit, squash or rebase). <strong>More Actions</strong> edits the title and description, labels and assignees, and locks or unlocks the conversation. <strong>New Pull Request</strong> is in the pull request list.</p>
 
 <h2 id="actions">GitHub Actions</h2>
 <p>Lists workflow runs for all branches or the current branch, filtered by status. Open a run to hear every job and step with its result, read the log, re-run all or only failed jobs, or cancel it.</p>
