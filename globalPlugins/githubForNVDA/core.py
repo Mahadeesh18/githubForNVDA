@@ -41,6 +41,7 @@ from .logic import (  # noqa: F401 - re-exported for the other modules
 	format_size,
 	GitHubRef,
 	has_next_page,
+	is_done,
 	last_page,
 	line_count,
 	month_name,
@@ -52,6 +53,7 @@ from .logic import (  # noqa: F401 - re-exported for the other modules
 	parse_label,
 	parse_link_header,
 	parse_repo_reference,
+	prune_done,
 	repo_from_api_url,
 	resolve_access_keys,
 	review_state_label,
@@ -64,6 +66,7 @@ from .logic import (  # noqa: F401 - re-exported for the other modules
 	truncate,
 	unique_path,
 	weekday_name,
+	without_done,
 )
 
 addonHandler.initTranslation()
@@ -1264,7 +1267,9 @@ def fetch_every_page(fetch, selections, limit=ALL_ITEMS_LIMIT):
 			return res
 		data = res.data if isinstance(res.data, list) else []
 		items.extend(data)
-		if not data or not res.has_next:
+		# A page can be empty after the fetch hid some items (done notifications), so only the
+		# Link header decides whether there is more.
+		if not res.has_next:
 			break
 		if len(items) >= limit or page >= 200:
 			truncated = True
@@ -1542,6 +1547,12 @@ def whats_new_text():
 			"- New commands you can give a key in Input gestures, GitHub for NVDA: open notifications, check for "
 			"new notifications now, pause or resume the announcements, My Work, My Repositories, search, open a "
 			"link, bookmarks, gists and your profile."
+		),
+		_("NOTIFICATIONS"),
+		_(
+			"- Mark as Done now really takes a notification out of your lists, so what is left is what still needs "
+			"you. It comes back by itself when something new happens in it. \"Show: Done\" lists the ones you "
+			"finished, with Move Back to Inbox."
 		),
 		_("REPOSITORIES"),
 		_(

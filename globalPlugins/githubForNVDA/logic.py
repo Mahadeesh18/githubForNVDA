@@ -511,3 +511,36 @@ def clean_branch_name(name):
 
 def line_count(text):
 	return (text or "").count("\n") + 1 if text else 0
+
+
+
+# ----------------------------------------------------------------------
+# Notifications marked as done
+# ----------------------------------------------------------------------
+
+DONE_KEEP_SECONDS = 90 * 24 * 3600
+DONE_LIMIT = 500
+
+
+def is_done(notification, done):
+	"""True when this thread was marked done and nothing has happened in it since.
+
+	done: {thread id: {"updated_at": ..., "done_at": seconds, "item": payload}}. New activity in a thread
+	(a newer updated_at) brings it back, as GitHub's own inbox does."""
+	entry = done.get(str(notification.get("id")))
+	if not entry:
+		return False
+	return (notification.get("updated_at") or "") <= (entry.get("updated_at") or "")
+
+
+def without_done(items, done):
+	return [n for n in items if not is_done(n, done)]
+
+
+def prune_done(done, now):
+	"""Forget old entries and keep the list small. Returns a new dict."""
+	fresh = {k: v for k, v in done.items() if now - float(v.get("done_at") or 0) < DONE_KEEP_SECONDS}
+	if len(fresh) > DONE_LIMIT:
+		newest = sorted(fresh.items(), key=lambda kv: float(kv[1].get("done_at") or 0), reverse=True)[:DONE_LIMIT]
+		fresh = dict(newest)
+	return fresh

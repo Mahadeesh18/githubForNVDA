@@ -8,6 +8,7 @@
 import addonHandler
 import datetime
 import gui
+import json
 import nvwave
 import os
 import re
@@ -37,6 +38,7 @@ from .core import (
 	inform,
 	items_per_page,
 	load_token,
+	local_fetch,
 	NOTIFICATION_FILTER_ALL,
 	NOTIFICATION_FILTER_DIRECT,
 	NOTIFICATION_INTERVALS,
@@ -45,6 +47,7 @@ from .core import (
 	PAD,
 	PagedListDialog,
 	parse_github_link,
+	prune_done,
 	prompt_text,
 	repo_from_api_url,
 	Result,
@@ -55,6 +58,7 @@ from .core import (
 	show_modal,
 	subject_type_label,
 	TextViewDialog,
+	without_done,
 )
 from .repos import (
 	open_link,
@@ -88,11 +92,82 @@ def reasons():
 	}
 
 
+# ----------------------------------------------------------------------
+# Notifications marked as done. GitHub's API has no "done" state it reports back: a thread marked done keeps
+# showing up in the lists (as read). So the add-on remembers which threads you marked done, and hides them
+# until something new happens in them, the way GitHub's own inbox does.
+# ----------------------------------------------------------------------
+
+class DoneStore:
+	"""{thread id: {"updated_at", "done_at", "item"}} saved in done_notifications.json. Thread safe."""
+
+	def __init__(self):
+		self._lock = threading.Lock()
+		self._data = None
+
+	@property
+	def path(self):
+		return os.path.join(config_dir(), "done_notifications.json")
+
+	def _load(self):
+		if self._data is None:
+			try:
+				with open(self.path, "r", encoding="utf-8") as f:
+					data = json.load(f)
+				self._data = data if isinstance(data, dict) else {}
+			except FileNotFoundError:
+				self._data = {}
+			except Exception:
+				log.debugWarning("GitHub for NVDA: could not read done notifications", exc_info=True)
+				self._data = {}
+		return self._data
+
+	def _save(self):
+		try:
+			temporary = self.path + ".tmp"
+			with open(temporary, "w", encoding="utf-8") as f:
+				json.dump(self._data, f)
+			os.replace(temporary, self.path)
+		except OSError:
+			log.error("GitHub for NVDA: could not save done notifications", exc_info=True)
+
+	def mark(self, notification):
+		with self._lock:
+			data = self._load()
+			data[str(notification["id"])] = {
+				"updated_at": notification.get("updated_at") or "", "done_at": time.time(),
+				"item": dict(notification, unread=False),
+			}
+			self._data = prune_done(data, time.time())
+			self._save()
+
+	def undo(self, notification):
+		with self._lock:
+			if self._load().pop(str(notification.get("id")), None) is not None:
+				self._save()
+
+	def hide_done(self, items):
+		with self._lock:
+			return without_done(items, self._load())
+
+	def items(self):
+		"""The threads marked done, most recently done first."""
+		with self._lock:
+			entries = sorted(self._load().values(), key=lambda e: float(e.get("done_at") or 0), reverse=True)
+		return [dict(e["item"], _done=True) for e in entries if isinstance(e.get("item"), dict) and e["item"].get("id")]
+
+
+done_store = DoneStore()
+
+
 def notification_label(n):
 	subject = n.get("subject") or {}
-	state = _("unread") if n.get("unread") else _("read")
+	if n.get("_done"):
+		state = _("done")
+	else:
+		state = _("unread") if n.get("unread") else _("read")
 	# Translators: one notification in a list. {type} is issue, pull request..., {reason} why you got it
-	# (such as "you were mentioned"), {state} is read or unread.
+	# (such as "you were mentioned"), {state} is read, unread or done.
 	return _("{repo}: {title}, {type}, {reason}, {state}, {date}").format(
 		repo=(n.get("repository") or {}).get("full_name", ""), title=subject.get("title", ""),
 		type=subject_type_label(subject.get("type")), reason=reasons().get(n.get("reason"), n.get("reason", "")),
@@ -125,7 +200,7 @@ def count_unread():
 	res = gh("GET", "/notifications", params={"per_page": 50}, retries=1, timeout=15)
 	if not res.ok or not isinstance(res.data, list):
 		return res
-	return len(res.data), res.has_next
+	return len(done_store.hide_done(res.data)), res.has_next
 
 
 def unread_message(count, more=False):
@@ -167,15 +242,28 @@ def open_notification(dialog, n):
 
 
 def show_notifications(parent):
+	"""Your notifications. The ones you marked done are hidden until something new happens in them;
+	"Show: Done" lists them."""
+	DONE_VIEW = 3
+
 	def fetch(page, selections):
+		if selections[0] == DONE_VIEW:
+			return local_fetch(done_store.items())(page, selections)
 		params = {"per_page": items_per_page(), "page": page}
 		if selections[0] == 1:
 			params["all"] = "true"
 		elif selections[0] == 2:
 			params["participating"] = "true"  # only threads you are directly involved in
-		return gh("GET", "/notifications", params=params)
+		res = gh("GET", "/notifications", params=params)
+		if res.ok and isinstance(res.data, list):
+			return Result(res.code, done_store.hide_done(res.data), res.headers)
+		return res
 
 	def mark_read(dlg, n):
+		if n.get("_done"):
+			ui.message(_("This notification is done; it is already read."))
+			return
+
 		def done(res):
 			if res.ok:
 				ui.message(_("Marked as read."))
@@ -185,11 +273,23 @@ def show_notifications(parent):
 
 		dlg.run(lambda: gh("PATCH", f"/notifications/threads/{n['id']}"), done)
 
-	def mark_done(dlg, n):
+	def done_label(n):
+		if n is not None and n.get("_done"):
+			return _("Move Back to &Inbox")
+		return _("Mark as &Done")
+
+	def toggle_done(dlg, n):
+		if n.get("_done"):
+			# GitHub cannot undo "done", but it still lists the thread: forgetting it here brings it back.
+			done_store.undo(n)
+			ui.message(_("Moved back to the inbox. It shows under All, and under Unread when something new happens."))
+			dlg.reload()
+			return
+
 		def done(res):
 			if res.ok:
+				done_store.mark(n)
 				ui.message(_("Marked as done."))
-				dlg.forget(n)
 				dlg.reload()
 			else:
 				ui.message(_("Could not mark as done.") + " " + res.message)
@@ -199,13 +299,16 @@ def show_notifications(parent):
 	def mute(dlg, n):
 		def done(res):
 			if res.ok:
+				done_store.mark(n)
 				ui.message(_("Muted. You will not be notified about this thread again."))
 				dlg.reload()
 			else:
 				ui.message(_("Could not mute it.") + " " + res.message)
 
 		def work():
-			gh("PUT", f"/notifications/threads/{n['id']}/subscription", body={"ignored": True})
+			muted = gh("PUT", f"/notifications/threads/{n['id']}/subscription", body={"ignored": True})
+			if not muted.ok:
+				return muted
 			return gh("DELETE", f"/notifications/threads/{n['id']}")
 
 		dlg.run(work, done)
@@ -227,7 +330,7 @@ def show_notifications(parent):
 	actions = [
 		(_("&View"), open_notification),
 		(_("Mark as &Read"), mark_read),
-		(_("Mark as &Done"), mark_done),
+		(done_label, toggle_done),
 		(_("&Mute Thread"), mute),
 		(_("Mark &All as Read"), mark_all, False),
 		(_("Open in &Browser"), lambda d, n: open_url(html_url(n))),
@@ -235,7 +338,7 @@ def show_notifications(parent):
 	]
 	show_modal(PagedListDialog(
 		parent, _("Notifications"), fetch, notification_label, actions, empty=_("No notifications."),
-		choices=[(_("&Show:"), [_("Unread only"), _("All"), _("Unread, involving me directly")])],
+		choices=[(_("&Show:"), [_("Unread only"), _("All, except done"), _("Unread, involving me directly"), _("Done")])],
 	))
 
 
@@ -496,8 +599,8 @@ class NotificationMonitor:
 		if not isinstance(res.data, list) or not res.ok:
 			return
 		mode = get_pref("notificationFilter")
-		wanted = [n for n in fresh if matches_filter(n, mode)]
-		unread = len(res.data)
+		wanted = [n for n in done_store.hide_done(fresh) if matches_filter(n, mode)]
+		unread = len(done_store.hide_done(res.data))
 		if manual:
 			# Speak at once from this thread (say() is thread safe) instead of hopping through the GUI loop.
 			if not was_primed:

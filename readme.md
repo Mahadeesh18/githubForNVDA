@@ -45,6 +45,7 @@ Navigate using standard Windows and NVDA controls:
 - **My Repositories:** Browse, sort, and manage your repositories. Use the Applications key for advanced options like cloning, starring, or deleting (requires admin access).
 - **Repository Browser:** Navigate files and folders smoothly. Edit UTF-8 text files directly or upload files/entire folders with ease.
 - **Issues & Pull Requests:** View descriptions, track discussions, add comments, approve PRs, merge changes, and manage labels/assignees.
+- **Notifications:** Mark as done really removes a notification from your lists until something new happens in it, so you can tell what still needs your work.
 - **GitHub Actions:** Monitor workflow runs in real-time and inspect job logs.
 - **Profile Management:** Update profile details, view contribution graphs, and manage organization memberships.
 

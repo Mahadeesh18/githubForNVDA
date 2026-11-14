@@ -43,3 +43,13 @@ def test_format_datetime_is_built_from_translatable_parts():
 	assert logic.format_datetime("2026-01-01T00:00:00Z") == "01 January 2026 at 12:00 AM"
 	assert logic.format_month("2026-03") == "March 2026"
 	assert logic.weekday_name(0) == "Sunday"
+
+
+def test_done_notifications():
+	done = {"1": {"updated_at": "2026-11-01T00:00:00Z", "done_at": 1000}}
+	old = {"id": "1", "updated_at": "2026-11-01T00:00:00Z"}
+	newer = {"id": "1", "updated_at": "2026-11-02T00:00:00Z"}
+	other = {"id": "2", "updated_at": "2026-11-01T00:00:00Z"}
+	assert logic.without_done([old, other], done) == [other]
+	assert logic.without_done([newer], done) == [newer]  # new activity brings it back
+	assert logic.prune_done(done, 1000 + logic.DONE_KEEP_SECONDS + 1) == {}
