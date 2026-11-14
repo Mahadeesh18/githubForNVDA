@@ -1323,17 +1323,22 @@ class MainMenuDialog(AccessibleDialog):
 			self.entries[index][1]()
 
 	def open_by_name(self):
-		clip = get_clipboard_text().strip()
-		start = clip if clip and len(clip) < 300 and parse_github_link(clip) else ""
-		text = prompt_text(self, _("Open Link or Repository"), _("Repository &name (owner/repo), user name, or GitHub link:"), start)
-		if not text:
-			return
-		if not open_link(self, text.strip()):
-			if text.strip() and "/" not in text and " " not in text.strip():
-				from .profile import show_user
-				show_user(self, text.strip().lstrip("@"))
-			else:
-				ui.message(_("Enter a repository as owner/repo, for example nvaccess/nvda, or paste a GitHub link."))
+		open_by_name(self)
+
+
+def open_by_name(parent):
+	"""Ask for owner/repo, a user name or a GitHub link (the clipboard fills it in), then open it."""
+	clip = get_clipboard_text().strip()
+	start = clip if clip and len(clip) < 300 and parse_github_link(clip) else ""
+	text = prompt_text(parent, _("Open Link or Repository"), _("Repository &name (owner/repo), user name, or GitHub link:"), start)
+	if not text:
+		return
+	if not open_link(parent, text.strip()):
+		if text.strip() and "/" not in text and " " not in text.strip():
+			from .profile import show_user
+			show_user(parent, text.strip().lstrip("@"))
+		else:
+			ui.message(_("Enter a repository as owner/repo, for example nvaccess/nvda, or paste a GitHub link."))
 
 
 def open_main_dialog():

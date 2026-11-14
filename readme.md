@@ -20,6 +20,7 @@ githubForNVDA is an accessible add-on designed for screen reader users who rely 
 The add-on does not assign default shortcuts. You need to configure them manually:
 - Open the NVDA menu > **Preferences** > **Input gestures**.
 - Navigate to the _GitHub for NVDA_ section and assign a key to **"Opens the GitHub for NVDA main menu"**.
+- Notifications, My Repositories, My Work, search, gists, your profile and more can each get their own key there too.
 
 ### 2. Configure Your Personal Access Token
 To use the features, authenticate using a GitHub Personal Access Token (classic):

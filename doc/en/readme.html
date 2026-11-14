@@ -103,7 +103,17 @@ a { color: #0b4fb3; }
 <p>None of these commands has a key until you give it one. Users choose their own keys in NVDA menu, Preferences, Input gestures, <em>GitHub for NVDA</em>, so the add-on never clashes with other add-ons or with your own keys:</p>
 <ul>
 <li>Open the GitHub for NVDA main menu</li>
+<li>Open your notifications</li>
 <li>Announce how many unread notifications you have</li>
+<li>Check for new notifications now and say what was found</li>
+<li>Pause or resume the spoken announcements of new notifications</li>
+<li>Open My Work</li>
+<li>Open My Repositories</li>
+<li>Open Search Public Repositories</li>
+<li>Open a link or repository (a GitHub link on the clipboard is filled in)</li>
+<li>Open your bookmarked repositories</li>
+<li>Open your gists</li>
+<li>Open your profile</li>
 <li>Open the What's New page</li>
 </ul>
 
@@ -127,6 +137,7 @@ a { color: #0b4fb3; }
 <h3>My Work</h3>
 <p>Shows what needs you across all of GitHub: items assigned to you, pull requests waiting for your review, your open pull requests and issues, items that mention you, and what you recently finished.</p>
 <h3>My Repositories</h3>
+<p>The list has the repositories you own, the ones you were added to as a collaborator and the ones of your organizations. GitHub does not list other repositories you can only read, such as a public repository you cloned: find those with Starred Repositories, Watched Repositories, Bookmarks or Open Link or Repository. If an organization uses single sign-on and your token is not authorized for it, its repositories are missing and the add-on says so: open github.com/settings/tokens, choose Configure SSO next to the token and authorize it.</p>
 <p>The Sort by box and the Search box are the first two stops, then the list. You can sort by name, recently updated, private, public, forks or archived, open, create (with an optional licence) and delete. Press <code>Enter</code> on a repository to open it and <code>Delete</code> to delete it (you are asked a Yes/No question first, and it starts on No). The <code>Applications</code> key opens a menu with:</p>
 <ul>
 <li>Open Repository, Rename, Edit Description, Edit Topics, Edit Website Address (with maintain or admin access) and Delete</li>
@@ -179,11 +190,11 @@ a { color: #0b4fb3; }
 <li><strong>Account Overview and Plan</strong>: your plan, two-factor authentication on or off, disk space, private repository limits.</li>
 <li><strong>Email Addresses</strong>: add and delete addresses, make the primary address public or private.</li>
 <li><strong>SSH Keys</strong>, <strong>SSH Signing Keys</strong> and <strong>GPG Keys</strong>: list, add, copy and delete.</li>
-<li><strong>Organization Memberships</strong>: make your membership public or private, accept an invitation.</li>
-<li><strong>Repository Invitations</strong>: accept or decline.</li>
+<li><strong>Organization Memberships</strong>: view an organization's repositories or profile, make your membership public or private, accept an invitation.</li>
+<li><strong>Repository Invitations</strong>: accept, decline or open the repository.</li>
 <li><strong>Blocked Users</strong>: block and unblock people.</li>
 <li><strong>Temporary Interaction Limits</strong>: limit who can interact with your public repositories for 24 hours up to 6 months.</li>
-<li><strong>Watched Repositories</strong> (with Unwatch).</li>
+<li><strong>Watched Repositories</strong>: Enter opens a repository in the repository browser. Issues and Pull Requests open its lists directly; Unwatch stops watching it.</li>
 <li><strong>Codespaces Secrets</strong>: see the names and delete them. Adding a secret needs encryption that NVDA does not have, so that opens GitHub.</li>
 <li><strong>More Settings on GitHub.com</strong>: everything GitHub only allows on its website (password, two-factor authentication, sessions, notifications, billing, appearance, developer settings and more). Enter opens the page in your browser.</li>
 </ul>

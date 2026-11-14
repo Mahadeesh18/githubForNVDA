@@ -523,11 +523,15 @@ def gh_paged(url, params=None, max_items=1000, per_page=100, unwrap=None):
 	first = True
 	last = None
 	truncated = False
+	sso = ""
 	while next_url:
 		res = gh("GET", next_url, params=params if first else None)
 		first = False
 		if not res.ok:
 			return res
+		# "partial-results; organizations=...": some organizations hid their items because the token is not
+		# authorized for their single sign-on.
+		sso = sso or (res.headers or {}).get("X-GitHub-SSO", "")
 		if isinstance(res.data, dict):
 			items.extend(res.data.get(unwrap or "items", []))
 		elif isinstance(res.data, list):
@@ -541,6 +545,8 @@ def gh_paged(url, params=None, max_items=1000, per_page=100, unwrap=None):
 	headers = dict(last.headers) if last else {}
 	if truncated:
 		headers["X-Truncated"] = "1"
+	if sso:
+		headers["X-GitHub-SSO"] = sso
 	return Result(200, items[:max_items], headers)
 
 
@@ -1530,6 +1536,21 @@ def whats_new_text():
 			"this window until the next update. OK closes it for now, so it opens again the next time. You can read "
 			"this again whenever you like: use the command \"Opens the What's New page\" in NVDA menu, Preferences, "
 			"Input gestures, GitHub for NVDA."
+		),
+		_("NEW COMMANDS"),
+		_(
+			"- New commands you can give a key in Input gestures, GitHub for NVDA: open notifications, check for "
+			"new notifications now, pause or resume the announcements, My Work, My Repositories, search, open a "
+			"link, bookmarks, gists and your profile."
+		),
+		_("REPOSITORIES"),
+		_(
+			"- Watched Repositories open in the repository browser, with their issues and pull requests, instead "
+			"of the browser. Organization Memberships can show an organization's repositories."
+		),
+		_(
+			"- My Repositories explains which repositories GitHub lists there, and says so when an organization's "
+			"single sign-on hides some of them."
 		),
 		_("OTHER CHANGES"),
 		_(

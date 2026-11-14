@@ -1534,7 +1534,13 @@ def show_org_memberships(parent):
 		if confirm(dlg, _("GitHub only lets you leave an organization on its website. Open the organization's people page now?"), _("Leave Organization")):
 			open_url(f"https://github.com/orgs/{q(org(m))}/people")
 
+	def repos(dlg, m):
+		from .repos import show_repo_list
+		show_repo_list(dlg, _("{name}'s repositories").format(name=org(m)), f"/orgs/{q(org(m))}/repos", {"sort": "updated"})
+
 	actions = [
+		(_("View &Repositories"), repos),
+		(_("View Pro&file"), lambda d, m: show_user(d, org(m))),
 		(_("Make Membership &Public"), make_public),
 		(_("Make Membership Pri&vate"), make_private),
 		(_("Accept &Invitation"), accept),
@@ -1542,6 +1548,12 @@ def show_org_memberships(parent):
 		(_("Open in &Browser"), lambda d, m: open_url(f"https://github.com/{q(org(m))}")),
 	]
 	_show_list(parent, _("Organization Memberships"), fetch, label, actions, _("You are not a member of any organization."))
+
+
+def _open_repo(parent, full_name):
+	from .repos import open_repo
+	if full_name:
+		open_repo(parent, full_name)
 
 
 def show_repo_invitations(parent):
@@ -1558,24 +1570,37 @@ def show_repo_invitations(parent):
 			_("Invitation accepted."), _("Could not accept the invitation."), "repo")),
 		(_("&Decline"), lambda d, i: _do(d, lambda: gh("DELETE", f"/user/repository_invitations/{i['id']}"),
 			_("Invitation declined."), _("Could not decline the invitation."), "repo")),
+		(_("&Open Repository"), lambda d, i: _open_repo(d, (i.get("repository") or {}).get("full_name"))),
 		(_("Open in &Browser"), lambda d, i: open_url((i.get("repository") or {}).get("html_url"))),
 	]
 	_show_list(parent, _("Repository Invitations"), fetch, label, actions, _("You have no repository invitations."))
 
 
 def show_watching(parent):
+	"""Repositories you watch. Enter opens one in the repository browser, like My Repositories."""
+	from .conversation import show_issues, show_pulls
+	from .repos import open_repo, repo_label
+
 	def fetch(page, selections):
 		return gh("GET", "/user/subscriptions", params=_page_params(page))
 
 	def unwatch(dlg, r):
 		if confirm(dlg, _("Stop watching {name}?").format(name=r["full_name"]), _("Unwatch"), default_no=True):
-			_do(dlg, lambda: gh("DELETE", f"/repos/{r['full_name']}/subscription"), _("You no longer watch it."), _("Could not unwatch."), "notifications")
+			def gone():
+				dlg.forget(r)  # GitHub can list it for a few more seconds
+				dlg.reload()
+
+			_do(dlg, lambda: gh("DELETE", f"/repos/{r['full_name']}/subscription"), _("You no longer watch it."),
+				_("Could not unwatch."), "notifications", after=gone)
 
 	actions = [
+		(_("&Open"), lambda d, r: open_repo(d, r["full_name"])),
+		(_("&Issues"), lambda d, r: show_issues(d, r["full_name"])),
+		(_("&Pull Requests"), lambda d, r: show_pulls(d, r["full_name"], default_branch=r.get("default_branch", ""))),
 		(_("Open in &Browser"), lambda d, r: open_url(r.get("html_url"))),
 		(_("&Unwatch"), unwatch),
 	]
-	_show_list(parent, _("Watched Repositories"), fetch, lambda r: r.get("full_name", ""), actions,
+	_show_list(parent, _("Watched Repositories"), fetch, repo_label, actions,
 		_("You are not watching any repository."))
 
 

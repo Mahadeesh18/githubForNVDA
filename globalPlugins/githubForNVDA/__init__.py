@@ -20,7 +20,6 @@ addonHandler.initTranslation()
 
 from .core import close_session, has_token, register_prefs, shutdown  # noqa: E402
 
-
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	# Translators: the category of this add-on's commands in the Input gestures dialog.
 	scriptCategory = _("GitHub for NVDA")
@@ -97,6 +96,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		finally:
 			self._open = False
 
+	def _open_window(self, function, token=True):
+		"""Open one of the add-on's windows on top of NVDA, after checking for a token when it needs one."""
+
+		def run():
+			if token:
+				from .notify import require_token
+				if not require_token(gui.mainFrame):
+					return
+			function(gui.mainFrame)
+
+		wx.CallAfter(self._guard, run)
+
 	def _open_main_menu(self):
 		"""After an install or update, show What's New first. OK, Don't show again and Escape all go on to the menu."""
 		from .notify import open_main_dialog
@@ -107,6 +118,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		except Exception:
 			log.error("GitHub for NVDA: the What's New window failed", exc_info=True)
 		open_main_dialog()
+
+	# --- commands ------------------------------------------------------------
 
 	@scriptHandler.script(
 		# Translators: input help for the command that opens the main menu.
@@ -125,6 +138,90 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return
 		from .notify import announce_unread
 		announce_unread()
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Checks for new GitHub notifications now and says what it found"),
+	)
+	def script_checkNotificationsNow(self, gesture):
+		ui.message(_("Checking GitHub notifications..."))
+		self._monitor.check_now()
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Pauses or resumes the spoken announcements of new GitHub notifications"),
+	)
+	def script_pauseAnnouncements(self, gesture):
+		if self._monitor.toggle_pause():
+			ui.message(_("Notification announcements paused."))
+		else:
+			ui.message(_("Notification announcements resumed."))
+		if not self._monitor.running:
+			ui.message(_("Background checks are off. Turn them on in NVDA Settings under GitHub for NVDA."))
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Opens your GitHub notifications"),
+	)
+	def script_showNotifications(self, gesture):
+		from .notify import show_notifications
+		self._open_window(show_notifications)
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Opens My Work: what needs your attention on GitHub"),
+	)
+	def script_showMyWork(self, gesture):
+		from .conversation import show_my_work
+		self._open_window(show_my_work)
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Opens My Repositories"),
+	)
+	def script_showMyRepositories(self, gesture):
+		from .repos import show_my_repos
+		self._open_window(show_my_repos)
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Opens Search Public Repositories"),
+	)
+	def script_searchGitHub(self, gesture):
+		from .notify import show_explore
+		self._open_window(show_explore, token=False)
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Opens a GitHub link or repository; a link on the clipboard is filled in"),
+	)
+	def script_openLink(self, gesture):
+		from .notify import open_by_name
+		self._open_window(open_by_name, token=False)
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Opens your bookmarked repositories"),
+	)
+	def script_showBookmarks(self, gesture):
+		from .repos import show_bookmarks
+		self._open_window(show_bookmarks, token=False)
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Opens your gists"),
+	)
+	def script_showGists(self, gesture):
+		from .notify import show_gists
+		self._open_window(show_gists)
+
+	@scriptHandler.script(
+		# Translators: input help.
+		description=_("Opens your GitHub profile"),
+	)
+	def script_showProfile(self, gesture):
+		from .profile import show_profile
+		self._open_window(show_profile)
 
 	@scriptHandler.script(
 		# Translators: input help for the command that opens the What's New page.

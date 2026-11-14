@@ -44,6 +44,7 @@ from .core import (
 	inform,
 	items_per_page,
 	local_fetch,
+	make_label,
 	open_url,
 	PAD,
 	PagedListDialog,
@@ -2669,6 +2670,12 @@ class MyReposDialog(AccessibleDialog):
 		self.server_raw = []  # the list exactly as GitHub last sent it
 		self.raw, self.display, self.my_login = [], [], ""
 		sizer = wx.BoxSizer(wx.VERTICAL)
+		sizer.Add(make_label(self, _(
+			"This list has the repositories you own, the ones you were added to as a collaborator and the ones "
+			"of your organizations. GitHub does not list other repositories you can only read, such as public "
+			"repositories you cloned: find those with Starred Repositories, Watched Repositories, Bookmarks or "
+			"Open Link or Repository."
+		), wrap=640), 0, wx.ALL, PAD)
 		row = wx.BoxSizer(wx.HORIZONTAL)
 		# Sort by comes first so it is the first stop of the Tab key, before the search box.
 		row.Add(wx.StaticText(self, label=_("S&ort by:")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, PAD)
@@ -2765,7 +2772,14 @@ class MyReposDialog(AccessibleDialog):
 			if waiting:
 				self._schedule_recheck(attempt + 1)
 			if not quiet:
-				ui.message(_("{count} repositories").format(count=len(self.raw)))
+				text = _("{count} repositories").format(count=len(self.raw))
+				if "partial-results" in str((repos.headers or {}).get("X-GitHub-SSO", "")):
+					text += ". " + _(
+						"Some organization repositories are hidden because your token is not authorized for the "
+						"organization's single sign-on. Open github.com/settings/tokens, choose Configure SSO "
+						"next to the token and authorize it."
+					)
+				ui.message(text)
 				self.listbox.SetFocus()
 
 		self.run(work, done)
