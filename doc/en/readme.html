@@ -250,7 +250,21 @@ a { color: #0b4fb3; }
 </ul>
 
 <h2 id="issues">Issues and pull requests</h2>
-<p>Open one to read the description, comments, reviews, code comments and changed files as text. You can add comments, close or reopen (issues ask whether it was completed or not planned), submit a review (comment, approve or request changes) and merge. Merge only offers the methods the repository allows (merge commit, squash or rebase). <strong>More Actions</strong> edits the title and description, labels and assignees, and locks or unlocks the conversation. <strong>New Pull Request</strong> is in the pull request list.</p>
+<p>Open one to read the description, comments, reviews, code comments and changed files as text. For a pull request this also says who was asked to review it and how its checks (tests) went: how many passed, failed or are still running, and the names of the failed ones. You can add comments, close or reopen (issues ask whether it was completed or not planned), submit a review (comment, approve or request changes) and merge. Merge only offers the methods the repository allows (merge commit, squash or rebase). <strong>New Pull Request</strong> is in the pull request list.</p>
+<ul>
+<li><strong>Comments</strong> lists every comment, one per line. Read one, reply (a comment on the code gets its reply in the same discussion; another comment is quoted in your reply), and edit or delete your own.</li>
+<li><strong>Files Changed</strong> (pull requests) lists every changed file. <strong>View Changes</strong> reads the changes of a file with line numbers: each line says its number and whether it was added or removed. <strong>View File</strong> opens the whole file from the pull request's branch, and <strong>Comment on a Line</strong> posts a comment on one line of the changes.</li>
+<li><strong>More Actions</strong> edits the title and description, labels and assignees, and locks or unlocks the conversation. For an open pull request it can also request reviewers, mark a draft ready for review (or turn it back into a draft), update the branch and resolve merge conflicts.</li>
+</ul>
+<h3>Update the branch and resolve merge conflicts</h3>
+<p><strong>Update Branch</strong> brings the latest changes of the base branch into the pull request's branch, like the button on GitHub. When the two branches changed the same lines, GitHub cannot do this by itself, and the add-on offers to resolve the conflicts. Merge offers the same when a pull request has conflicts.</p>
+<p><strong>Resolve Merge Conflicts</strong> merges the base branch into the pull request's branch and asks you only about what really conflicts:</p>
+<ul>
+<li>For a text file, a window goes through its conflicts one at a time and says where each one is. Three read-only boxes show the lines on your branch, on the base branch, and as they were before either change. Choose what to keep: your branch, the base branch, both (in either order) or neither. The Result box shows what will be saved, and you can edit it. Next Conflict and Previous Conflict move between them; Save File finishes the file.</li>
+<li>For a file that cannot be merged line by line (a binary file, a submodule, or a file deleted on one branch and changed on the other), you choose which branch's version to keep.</li>
+<li>Files that only one branch changed are merged for you.</li>
+</ul>
+<p>Before anything is saved you are asked to confirm. The result is one merge commit on the pull request's branch, the same as GitHub's own conflict editor makes. Cancel at any point and nothing changes. If somebody pushes to the branch while you work, nothing is saved and you are told to try again. Conflicts can only be resolved here when both branches are in the same repository; for a pull request from a fork, the add-on offers to open it in your browser.</p>
 
 <h2 id="actions">GitHub Actions</h2>
 <p>Lists workflow runs for all branches or the current branch, filtered by status. Open a run to hear every job and step with its result, read the log, re-run all or only failed jobs, or cancel it.</p>

@@ -45,6 +45,35 @@ def test_format_datetime_is_built_from_translatable_parts():
 	assert logic.weekday_name(0) == "Sunday"
 
 
+def test_merge3_clean_and_conflict():
+	base = ["a\n", "b\n", "c\n"]
+	chunks = logic.merge3(base, ["A\n", "b\n", "c\n"], ["a\n", "b\n", "C\n"])
+	assert chunks == [("ok", ["A\n", "b\n", "C\n"])]
+	chunks = logic.merge3(base, ["a\n", "mine\n", "c\n"], ["a\n", "theirs\n", "c\n"])
+	assert chunks == [("ok", ["a\n"]), ("conflict", ["b\n"], ["mine\n"], ["theirs\n"]), ("ok", ["c\n"])]
+	assert logic.join_chunks(chunks, {0: "both\n"}) == "a\nboth\nc\n"
+
+
+def test_merge_text_same_change_on_both_sides():
+	chunks, count = logic.merge_text("x\ny\n", "x\nz\n", "x\nz\n")
+	assert count == 0 and logic.join_chunks(chunks) == "x\nz\n"
+
+
+def test_merge_text_added_file_on_both_sides():
+	chunks, count = logic.merge_text("", "one\n", "two\n")
+	assert count == 1
+
+
+def test_three_way_trees():
+	f = lambda sha: ("100644", "blob", sha)  # noqa: E731
+	base = {"same": f("1"), "ours": f("2"), "theirs": f("3"), "both": f("4"), "gone": f("5")}
+	ours = {"same": f("1"), "ours": f("2b"), "theirs": f("3"), "both": f("4a"), "gone": f("5")}
+	theirs = {"same": f("1"), "ours": f("2"), "theirs": f("3b"), "both": f("4b"), "new": f("6")}
+	take, conflicts = logic.three_way_trees(base, ours, theirs)
+	assert take == {"theirs": f("3b"), "new": f("6"), "gone": None}
+	assert conflicts == ["both"]
+
+
 def test_done_notifications():
 	done = {"1": {"updated_at": "2026-11-01T00:00:00Z", "done_at": 1000}}
 	old = {"id": "1", "updated_at": "2026-11-01T00:00:00Z"}
@@ -53,3 +82,18 @@ def test_done_notifications():
 	assert logic.without_done([old, other], done) == [other]
 	assert logic.without_done([newer], done) == [newer]  # new activity brings it back
 	assert logic.prune_done(done, 1000 + logic.DONE_KEEP_SECONDS + 1) == {}
+
+
+def test_checks_summary():
+	runs = [{"name": "build", "conclusion": "success"}, {"name": "lint", "conclusion": "failure"}, {"name": "slow", "conclusion": None}]
+	lines = logic.checks_summary(runs, [{"context": "ci/old", "state": "success"}])
+	assert lines[0] == "Checks: 2 passed, 1 failed, 1 still running."
+	assert lines[1] == "Failed checks: lint" and lines[2] == "Running checks: slow"
+	assert logic.checks_summary([], []) == []
+
+
+def test_numbered_patch():
+	patch = "@@ -10,3 +10,3 @@ def f():\n a\n-b\n+B\n c"
+	assert logic.numbered_patch(patch).split("\n") == [
+		"Lines 10 to 12: def f():", "10: a", "11 removed: b", "11 added: B", "12: c",
+	]

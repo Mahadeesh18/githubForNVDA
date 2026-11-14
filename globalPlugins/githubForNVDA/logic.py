@@ -515,6 +515,115 @@ def line_count(text):
 
 
 # ----------------------------------------------------------------------
+# Three-way merge of text, for resolving pull request conflicts
+# ----------------------------------------------------------------------
+
+def _intersect(ra, rb):
+	start, end = max(ra[0], rb[0]), min(ra[1], rb[1])
+	return (start, end) if start < end else None
+
+
+def _sync_regions(base, mine, theirs):
+	"""Regions of base that are unchanged in both versions: (base start, base end, mine start, mine end,
+	theirs start, theirs end). The last entry always marks the end of every text."""
+	import difflib
+	amatches = difflib.SequenceMatcher(None, base, mine, autojunk=False).get_matching_blocks()
+	bmatches = difflib.SequenceMatcher(None, base, theirs, autojunk=False).get_matching_blocks()
+	ia = ib = 0
+	regions = []
+	while ia < len(amatches) and ib < len(bmatches):
+		abase, amatch, alen = amatches[ia]
+		bbase, bmatch, blen = bmatches[ib]
+		common = _intersect((abase, abase + alen), (bbase, bbase + blen))
+		if common:
+			start, end = common
+			asub = amatch + (start - abase)
+			bsub = bmatch + (start - bbase)
+			regions.append((start, end, asub, asub + end - start, bsub, bsub + end - start))
+		if abase + alen < bbase + blen:
+			ia += 1
+		else:
+			ib += 1
+	regions.append((len(base), len(base), len(mine), len(mine), len(theirs), len(theirs)))
+	return regions
+
+
+def merge3(base, mine, theirs):
+	"""Merge two edits of the same text, line by line, like git does.
+
+	base, mine, theirs: lists of lines. Returns a list of chunks:
+	("ok", lines) for text both sides agree on, and ("conflict", base_lines, mine_lines, theirs_lines)
+	where both sides changed the same place differently.
+	"""
+	chunks = []
+
+	def add_ok(lines):
+		if not lines:
+			return
+		if chunks and chunks[-1][0] == "ok":
+			chunks[-1] = ("ok", chunks[-1][1] + list(lines))
+		else:
+			chunks.append(("ok", list(lines)))
+
+	iz = ia = ib = 0
+	for zmatch, zend, amatch, aend, bmatch, bend in _sync_regions(base, mine, theirs):
+		a_part, b_part, z_part = mine[ia:amatch], theirs[ib:bmatch], base[iz:zmatch]
+		if a_part or b_part:
+			if a_part == b_part:
+				add_ok(a_part)
+			elif a_part == z_part:
+				add_ok(b_part)  # only theirs changed
+			elif b_part == z_part:
+				add_ok(a_part)  # only mine changed
+			else:
+				chunks.append(("conflict", list(z_part), list(a_part), list(b_part)))
+		add_ok(base[zmatch:zend])
+		iz, ia, ib = zend, aend, bend
+	return chunks
+
+
+def merge_text(base, mine, theirs):
+	"""merge3 for whole texts. Returns (chunks, conflict count). Lines keep their line endings."""
+	chunks = merge3(
+		(base or "").splitlines(keepends=True), (mine or "").splitlines(keepends=True),
+		(theirs or "").splitlines(keepends=True),
+	)
+	return chunks, sum(1 for c in chunks if c[0] == "conflict")
+
+
+def join_chunks(chunks, choices=None):
+	"""Turn merge chunks back into text. choices: {conflict index: text} for every conflict."""
+	choices = choices or {}
+	parts, number = [], 0
+	for chunk in chunks:
+		if chunk[0] == "ok":
+			parts.extend(chunk[1])
+		else:
+			parts.append(choices.get(number, ""))
+			number += 1
+	return "".join(parts)
+
+
+def three_way_trees(base_tree, ours_tree, theirs_tree):
+	"""Compare three {path: (mode, type, sha)} maps the way git merges trees.
+
+	ours is the pull request branch, theirs the branch it merges into, base their common ancestor.
+	Returns (take_theirs, conflicts): take_theirs maps a path to the entry (or None to delete it) that must
+	change in our tree, conflicts lists the paths that both sides changed differently.
+	"""
+	take, conflicts = {}, []
+	for path in sorted(set(base_tree) | set(ours_tree) | set(theirs_tree)):
+		old, ours, theirs = base_tree.get(path), ours_tree.get(path), theirs_tree.get(path)
+		if ours == theirs or theirs == old:
+			continue  # nothing to do: we already have what is wanted
+		if ours == old:
+			take[path] = theirs  # only their side changed it
+		else:
+			conflicts.append(path)
+	return take, conflicts
+
+
+# ----------------------------------------------------------------------
 # Notifications marked as done
 # ----------------------------------------------------------------------
 
@@ -544,3 +653,65 @@ def prune_done(done, now):
 		newest = sorted(fresh.items(), key=lambda kv: float(kv[1].get("done_at") or 0), reverse=True)[:DONE_LIMIT]
 		fresh = dict(newest)
 	return fresh
+
+
+# ----------------------------------------------------------------------
+# Pull requests: checks and diffs
+# ----------------------------------------------------------------------
+
+_PASSED = ("success", "neutral", "skipped")
+_FAILED = ("failure", "timed_out", "cancelled", "action_required", "startup_failure", "error", "stale")
+
+
+def checks_summary(check_runs, statuses):
+	"""Lines describing the checks of a commit: GitHub Actions check runs and older commit statuses."""
+	results = []  # (name, "passed" | "failed" | "pending")
+	for run in check_runs or []:
+		conclusion = run.get("conclusion")
+		state = "pending" if not conclusion else ("passed" if conclusion in _PASSED else "failed")
+		results.append((run.get("name") or "", state))
+	for status in statuses or []:
+		state = status.get("state")
+		results.append((status.get("context") or "", {"success": "passed", "pending": "pending"}.get(state, "failed")))
+	if not results:
+		return []
+	count = {key: sum(1 for _n, s in results if s == key) for key in ("passed", "failed", "pending")}
+	# Translators: a summary of the automatic checks (tests) of a pull request.
+	lines = [_("Checks: {passed} passed, {failed} failed, {pending} still running.").format(**count)]
+	failed = [n for n, s in results if s == "failed"]
+	if failed:
+		lines.append(_("Failed checks: {names}").format(names=", ".join(failed)))
+	running = [n for n, s in results if s == "pending"]
+	if running:
+		lines.append(_("Running checks: {names}").format(names=", ".join(running)))
+	return lines
+
+
+def numbered_patch(patch):
+	"""A unified diff with line numbers, easier to follow by ear.
+
+	'@@ -10,2 +10,3 @@' headers become 'Lines 10 to 12:', then each line says its number and whether it
+	was added or removed. Removed lines carry their number in the old file, the others in the new file."""
+	out, old, new = [], 0, 0
+	for line in (patch or "").split("\n"):
+		match = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$", line)
+		if match:
+			old, new = int(match.group(1)), int(match.group(3))
+			count = int(match.group(4) or 1)
+			out += ["", _("Lines {first} to {last}:").format(first=new, last=new + max(count, 1) - 1) + match.group(5)]
+			continue
+		if line.startswith("\\"):
+			continue  # "\ No newline at end of file"
+		if line.startswith("+"):
+			# Translators: one added line of a change, such as "12 added: print(x)".
+			out.append(_("{number} added: {text}").format(number=new, text=line[1:]))
+			new += 1
+		elif line.startswith("-"):
+			# Translators: one removed line of a change. The number is the line in the old version.
+			out.append(_("{number} removed: {text}").format(number=old, text=line[1:]))
+			old += 1
+		else:
+			out.append(f"{new}: {line[1:]}")
+			old += 1
+			new += 1
+	return "\n".join(out).strip("\n")

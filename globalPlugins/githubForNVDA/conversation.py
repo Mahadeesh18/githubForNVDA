@@ -98,7 +98,7 @@ def review_summary(reviews):
 	return approved, changes
 
 
-def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), inline=()):
+def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), inline=(), checks=()):
 	"""Everything about an issue or pull request as plain, readable text."""
 	pr = pr or {}
 	lines = [
@@ -140,6 +140,10 @@ def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), in
 			lines.append(_("Approved by: {names}").format(names=", ".join(approved)))
 		if changes:
 			lines.append(_("Changes requested by: {names}").format(names=", ".join(changes)))
+		requested = [u.get("login") for u in pr.get("requested_reviewers") or [] if u.get("login")]
+		if requested:
+			lines.append(_("Review requested from: {names}").format(names=", ".join(requested)))
+		lines += list(checks or [])
 	lines += ["", _("Description:"), issue.get("body") or _("No description provided.")]
 	for number, comment in enumerate(comments, 1):
 		lines += [
@@ -178,7 +182,7 @@ def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), in
 		for f in files:
 			lines.append(f"{f['status']}: {f['filename']} (+{f['additions']} -{f['deletions']})")
 		if len(files) >= 100:
-			lines.append(_("Only the first 100 files are listed."))
+			lines.append(_("Only the first 100 files are listed here. Files Changed lists them all, with their changes."))
 	return "\n".join(lines)
 
 
@@ -199,7 +203,9 @@ class ConversationDialog(AccessibleDialog):
 		self.btn_comment = self.add_button(row, _("Add &Comment"), self.on_comment)
 		self.btn_state = self.add_button(row, _("Close or Re&open"), self.on_toggle_state)
 		self.btn_review = self.btn_merge = None
+		self.add_button(row, _("Comme&nts..."), self.on_comments)
 		if is_pr:
+			self.add_button(row, _("&Files Changed..."), self.on_files)
 			self.btn_review = self.add_button(row, _("Submit &Review"), self.on_review)
 			self.btn_merge = self.add_button(row, _("&Merge Pull Request"), self.on_merge)
 		self.btn_more = self.add_button(row, _("M&ore Actions..."), self.on_more)
@@ -241,6 +247,10 @@ class ConversationDialog(AccessibleDialog):
 				payload["files"] = gh("GET", f"{self._api}/pulls/{self.number}/files", params={"per_page": 100})
 				payload["reviews"] = gh_paged(f"{self._api}/pulls/{self.number}/reviews", max_items=100)
 				payload["inline"] = gh_paged(f"{self._api}/pulls/{self.number}/comments", max_items=200)
+				pr = payload["pr"]
+				if pr.ok and isinstance(pr.data, dict):
+					from .pullrequests import load_checks
+					payload["checks"] = load_checks(self.full, (pr.data.get("head") or {}).get("sha"))
 			return Result(200, payload, {})
 
 		def data_of(result, default):
@@ -257,7 +267,7 @@ class ConversationDialog(AccessibleDialog):
 			self.repo = data_of(payload.get("repo"), {})
 			self.text.SetValue(compose_conversation(
 				self.issue, self.pr, data_of(payload["comments"], []), data_of(payload["files"], None),
-				data_of(payload["reviews"], []), data_of(payload["inline"], []),
+				data_of(payload["reviews"], []), data_of(payload["inline"], []), payload.get("checks") or (),
 			))
 			self.text.SetInsertionPoint(0)
 			self._update_buttons()
@@ -339,6 +349,10 @@ class ConversationDialog(AccessibleDialog):
 		]
 		# GitHub only reports which methods are allowed to people with write access; otherwise offer them all.
 		methods = [m for m in methods if self.repo.get(m[2], True)] or methods
+		if self.pr.get("mergeable_state") == "dirty" or self.pr.get("mergeable") is False:
+			if confirm(self, _("This pull request has merge conflicts, so it cannot be merged yet. Resolve the conflicts now?"), _("Merge Pull Request")):
+				self.on_resolve()
+			return
 		index = ask_choice(
 			self, _("Merge Pull Request"), _("How should this pull request be merged?"), [m[0] for m in methods]
 		)
@@ -397,16 +411,55 @@ class ConversationDialog(AccessibleDialog):
 	# --- more actions ------------------------------------------------
 	def on_more(self, event):
 		locked = bool(self.issue.get("locked"))
-		self.popup_menu([
+		entries = [
 			(_("Edit &Title and Description..."), self.on_edit),
 			(_("Edit &Labels..."), self.on_labels),
 			(_("Edit &Assignees..."), self.on_assignees),
 			(_("&Unlock Conversation") if locked else _("&Lock Conversation"), self.on_lock),
 			None,
+		]
+		if self.is_pr and self.pr and not self.pr.get("merged") and self.issue.get("state") == "open":
+			entries += [
+				(_("Request Re&viewers..."), self.on_reviewers),
+				(_("Mark Ready for Revie&w") if self.pr.get("draft") else _("Convert to &Draft"), self.on_draft),
+				(_("&Update Branch from {base}").format(base=(self.pr.get("base") or {}).get("ref", "")), self.on_update_branch),
+				(_("Resol&ve Merge Conflicts..."), self.on_resolve),
+				None,
+			]
+		self.popup_menu(entries + [
 			(_("Copy Lin&k"), lambda: copy_to_clipboard(self._url(), _("Link copied."))),
 			(_("Open in &Browser"), lambda: open_url(self._url())),
 			(_("Re&fresh"), self.load),
 		])
+
+	# --- pull request tools (pullrequests.py) ---------------------------------
+	def on_comments(self, event):
+		from .pullrequests import show_comments
+		show_comments(self, self.full, self.number, self.is_pr)
+		self.load()
+
+	def on_files(self, event):
+		if not self.pr:
+			ui.message(_("The pull request has not loaded yet."))
+			return
+		from .pullrequests import show_files
+		show_files(self, self.full, self.number, self.pr)
+
+	def on_reviewers(self):
+		from .pullrequests import request_reviewers
+		request_reviewers(self, self.full, self.number, self.pr, self.load)
+
+	def on_draft(self):
+		from .pullrequests import toggle_draft
+		toggle_draft(self, self.pr, self.load)
+
+	def on_update_branch(self):
+		from .pullrequests import update_branch
+		update_branch(self, self.full, self.number, self.pr, self.load)
+
+	def on_resolve(self):
+		from .pullrequests import resolve_conflicts
+		resolve_conflicts(self, self.full, self.pr, self.load)
 
 	def _patch(self, body, success):
 		def done(res):

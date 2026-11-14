@@ -30,6 +30,7 @@ from logHandler import log
 from .logic import (  # noqa: F401 - re-exported for the other modules
 	account_type_label,
 	build_label,
+	checks_summary,
 	clean_branch_name,
 	decode_text,
 	Decoded,
@@ -42,13 +43,16 @@ from .logic import (  # noqa: F401 - re-exported for the other modules
 	GitHubRef,
 	has_next_page,
 	is_done,
+	join_chunks,
 	last_page,
 	line_count,
+	merge_text,
 	month_name,
 	open_state_label,
 	format_month,
 	format_time,
 	normalize_newlines,
+	numbered_patch,
 	parse_github_link,
 	parse_label,
 	parse_link_header,
@@ -61,6 +65,7 @@ from .logic import (  # noqa: F401 - re-exported for the other modules
 	safe_filename,
 	split_names,
 	subject_type_label,
+	three_way_trees,
 	strip_mnemonic,
 	tail,
 	truncate,
@@ -1553,6 +1558,17 @@ def whats_new_text():
 			"- Mark as Done now really takes a notification out of your lists, so what is left is what still needs "
 			"you. It comes back by itself when something new happens in it. \"Show: Done\" lists the ones you "
 			"finished, with Move Back to Inbox."
+		),
+		_("PULL REQUESTS"),
+		_(
+			"- Resolve merge conflicts without the browser: the add-on goes through each conflict and lets you keep "
+			"your branch, the base branch, both, or your own edit, then commits the merge. Update Branch brings "
+			"in the latest changes of the base branch."
+		),
+		_(
+			"- Files Changed lists every changed file and reads its changes with line numbers. You can comment "
+			"on a line, reply to comments, edit or delete your own comments, request reviewers, and mark a draft "
+			"ready for review. The pull request window also says how its checks went."
 		),
 		_("REPOSITORIES"),
 		_(
