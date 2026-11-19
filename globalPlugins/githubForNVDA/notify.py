@@ -21,6 +21,7 @@ from gui.settingsDialogs import SettingsPanel
 from logHandler import log
 
 from .core import (
+	count_text,
 	AccessibleDialog,
 	ask_form,
 	config_dir,
@@ -34,6 +35,7 @@ from .core import (
 	get_clipboard_text,
 	get_pref,
 	gh,
+	gh_paged,
 	has_token,
 	inform,
 	items_per_page,
@@ -48,10 +50,12 @@ from .core import (
 	PagedListDialog,
 	parse_github_link,
 	prune_done,
+	relative_time,
 	prompt_text,
 	repo_from_api_url,
 	Result,
 	run_async,
+	run_from,
 	save_token,
 	say,
 	set_pref,
@@ -167,11 +171,12 @@ def notification_label(n):
 	else:
 		state = _("unread") if n.get("unread") else _("read")
 	# Translators: one notification in a list. {type} is issue, pull request..., {reason} why you got it
-	# (such as "you were mentioned"), {state} is read, unread or done.
+	# (such as "you were mentioned"), {state} is read, unread or done, {date} says how long ago, such as
+	# "3 hours ago" (or a date for anything older than a week).
 	return _("{repo}: {title}, {type}, {reason}, {state}, {date}").format(
 		repo=(n.get("repository") or {}).get("full_name", ""), title=subject.get("title", ""),
 		type=subject_type_label(subject.get("type")), reason=reasons().get(n.get("reason"), n.get("reason", "")),
-		state=state, date=format_date(n.get("updated_at")),
+		state=state, date=relative_time(n.get("updated_at")),
 	)
 
 
@@ -195,23 +200,29 @@ def html_url(n):
 	return f"https://github.com/{full}/{kind}/{ident}"
 
 
+UNREAD_COUNT_LIMIT = 2000
+
+
 def count_unread():
-	"""Blocking: return (count, more) of unread notifications, or a failed Result."""
-	res = gh("GET", "/notifications", params={"per_page": 50}, retries=1, timeout=15)
+	"""Blocking: return (count, more) of unread notifications, or a failed Result. Every page is counted;
+	more is True only past UNREAD_COUNT_LIMIT."""
+	res = gh_paged("/notifications", max_items=UNREAD_COUNT_LIMIT, per_page=50)  # GitHub allows 50 per page here
 	if not res.ok or not isinstance(res.data, list):
 		return res
-	return len(done_store.hide_done(res.data)), res.has_next
+	return len(done_store.hide_done(res.data)), bool((res.headers or {}).get("X-Truncated"))
 
 
 def unread_message(count, more=False):
 	"""The sentence that says how many notifications are unread."""
 	if count == 0:
 		return _("You have no unread GitHub notifications.")
-	if count == 1 and not more:
-		return _("You have 1 unread GitHub notification.")
 	if more:
-		return _("You have {count} or more unread GitHub notifications.").format(count=count)
-	return _("You have {count} unread GitHub notifications.").format(count=count)
+		return ngettext(
+			"You have {count} or more unread GitHub notification.", "You have {count} or more unread GitHub notifications.", count,
+		).format(count=count)
+	return ngettext(
+		"You have {count} unread GitHub notification.", "You have {count} unread GitHub notifications.", count,
+	).format(count=count)
 
 
 def announce_unread():
@@ -233,7 +244,9 @@ def open_notification(dialog, n):
 	full = (n.get("repository") or {}).get("full_name") or repo_from_api_url(subject.get("url"))
 	if number and subject.get("type") in ("Issue", "PullRequest") and full:
 		show_conversation(dialog, full, number, subject.get("type") == "PullRequest", n.get("id"))
-		dialog.reload()
+		if get_pref("markReadOnView") and n.get("unread") and not n.get("_done"):
+			n["unread"] = False
+			dialog.update_item(n)
 	elif subject.get("type") == "Commit" and full and subject.get("url"):
 		from .repos import show_commit
 		show_commit(dialog, full, subject["url"].rsplit("/", 1)[-1])
@@ -264,10 +277,15 @@ def show_notifications(parent):
 			ui.message(_("This notification is done; it is already read."))
 			return
 
+		if not n.get("unread"):
+			ui.message(_("Already read."))
+			return
+
 		def done(res):
 			if res.ok:
+				n["unread"] = False
+				dlg.update_item(n)
 				ui.message(_("Marked as read."))
-				dlg.reload()
 			else:
 				ui.message(_("Could not mark as read.") + " " + res.message)
 
@@ -278,19 +296,25 @@ def show_notifications(parent):
 			return _("Move Back to &Inbox")
 		return _("Mark as &Done")
 
+	def leave_list(dlg, n, message):
+		"""Take the notification out of the list and say where the selection is now."""
+		following = dlg.remove_item(n)
+		if following is None:
+			ui.message(message + " " + dlg.empty)
+		else:
+			ui.message(message + " " + notification_label(following))
+
 	def toggle_done(dlg, n):
 		if n.get("_done"):
 			# GitHub cannot undo "done", but it still lists the thread: forgetting it here brings it back.
 			done_store.undo(n)
-			ui.message(_("Moved back to the inbox. It shows under All, and under Unread when something new happens."))
-			dlg.reload()
+			leave_list(dlg, n, _("Moved back to the inbox. It shows under All, and under Unread when something new happens."))
 			return
 
 		def done(res):
 			if res.ok:
 				done_store.mark(n)
-				ui.message(_("Marked as done."))
-				dlg.reload()
+				leave_list(dlg, n, _("Marked as done."))
 			else:
 				ui.message(_("Could not mark as done.") + " " + res.message)
 
@@ -300,8 +324,7 @@ def show_notifications(parent):
 		def done(res):
 			if res.ok:
 				done_store.mark(n)
-				ui.message(_("Muted. You will not be notified about this thread again."))
-				dlg.reload()
+				leave_list(dlg, n, _("Muted. You will not be notified about this thread again."))
 			else:
 				ui.message(_("Could not mute it.") + " " + res.message)
 
@@ -320,8 +343,11 @@ def show_notifications(parent):
 
 		def done(res):
 			if res.ok:
+				for item in dlg.items:
+					if item.get("unread"):
+						item["unread"] = False
+						dlg.update_item(item)
 				ui.message(_("All notifications marked as read."))
-				dlg.reload()
 			else:
 				ui.message(_("Could not mark all as read.") + " " + res.message)
 
@@ -367,9 +393,7 @@ def summarize(items, details):
 			repo = (n.get("repository") or {}).get("name") or repo_from_api_url(subject.get("url"))
 			parts.append(f"{repo}: {subject.get('title', '')}")
 		return _("New GitHub notification: {details}").format(details="; ".join(parts))
-	if count == 1:
-		return _("1 new GitHub notification")
-	return _("{count} new GitHub notifications").format(count=count)
+	return ngettext("{count} new GitHub notification", "{count} new GitHub notifications", count).format(count=count)
 
 
 SOUNDS_DIR = os.path.join(os.path.dirname(__file__), "sounds")
@@ -424,12 +448,6 @@ def play_notification_sound(choice=None, custom_file=None):
 				nvwave.playWaveFile(NOTIFICATION_SOUND, asynchronous=True)
 			except Exception:
 				log.debugWarning("GitHub for NVDA: default notification sound failed", exc_info=True)
-
-
-def newer_than(items, last_seen):
-	"""Notifications updated after last_seen (an ISO string), oldest first."""
-	fresh = [n for n in items if (n.get("updated_at") or "") > last_seen]
-	return sorted(fresh, key=lambda n: n.get("updated_at") or "")
 
 
 def new_since(items, seen):
@@ -600,15 +618,19 @@ class NotificationMonitor:
 			return
 		mode = get_pref("notificationFilter")
 		wanted = [n for n in done_store.hide_done(fresh) if matches_filter(n, mode)]
-		unread = len(done_store.hide_done(res.data))
+		unread, more = len(done_store.hide_done(res.data)), res.has_next
+		if manual and res.has_next:
+			counted = count_unread()  # more than one page: count them all
+			if isinstance(counted, tuple):
+				unread, more = counted
 		if manual:
 			# Speak at once from this thread (say() is thread safe) instead of hopping through the GUI loop.
 			if not was_primed:
-				say(unread_message(unread, res.has_next))
+				say(unread_message(unread, more))
 			elif wanted:
 				self._announce(wanted, force=True)
 			else:
-				say(_("No new GitHub notifications.") + " " + unread_message(unread, res.has_next))
+				say(_("No new GitHub notifications.") + " " + unread_message(unread, more))
 			return
 		if was_primed and wanted:
 			self._announce(wanted)
@@ -685,12 +707,12 @@ def interval_label(seconds):
 	if seconds == 0:
 		return _("Off")
 	if seconds < 60:
-		return _("Every {seconds} seconds").format(seconds=seconds)
+		return ngettext("Every {seconds} second", "Every {seconds} seconds", seconds).format(seconds=seconds)
 	if seconds == 60:
 		return _("Every minute")
 	if seconds == 3600:
 		return _("Every hour")
-	return _("Every {minutes} minutes").format(minutes=seconds // 60)
+	return ngettext("Every {minutes} minute", "Every {minutes} minutes", seconds // 60).format(minutes=seconds // 60)
 
 
 def nearest_interval(seconds):
@@ -1072,25 +1094,53 @@ class SearchDialog(AccessibleDialog):
 		self._search_id += 1
 		request = self._search_id
 
-		def done(res):
-			if request != self._search_id:
+		# The first page is shown as soon as it arrives; the other pages are added to the end of the list while
+		# you read, without moving the focus. A search for a common word has up to 10 pages and takes about
+		# half a minute in all.
+		shown = {"first": True}
+
+		def current():
+			return request == self._search_id and not self._dead
+
+		def show(items, total, final):
+			if not current():
 				return
-			if not res.ok or not isinstance(res.data, dict):
-				ui.message(_("Search failed.") + " " + res.message)
-				return
-			items = res.data.get("items", [])
-			self.kind, self.results = kind, items
-			self.total = res.data.get("total_count", 0)
-			self.listbox.Set([self._label(r) for r in items])
-			if items:
+			self.kind, self.total = kind, total
+			if shown["first"]:
+				shown["first"] = False
+				self.results = list(items)
+				self.listbox.Set([self._label(r) for r in items])
+				if not items:
+					ui.message(_("Nothing found."))
+					return
 				self.listbox.SetSelection(0)
 				self.listbox.SetFocus()
-				if self.total > len(items):
-					ui.message(_("{count} of {total} results").format(count=len(items), total=self.total))
+				if not final:
+					ui.message(ngettext(
+						"{count} of {total} result. Loading more...", "{count} of {total} results. Loading more...", total,
+					).format(count=len(items), total=total))
+				elif total > len(items):
+					ui.message(ngettext("{count} of {total} result", "{count} of {total} results", total).format(count=len(items), total=total))
 				else:
-					ui.message(_("{count} results").format(count=len(items)))
-			else:
-				ui.message(_("Nothing found."))
+					ui.message(count_text("results", len(items)))
+				return
+			new = items[len(self.results):]
+			if new:
+				self.results.extend(new)
+				self.listbox.Append([self._label(r) for r in new])
+			if final:
+				ui.message(ngettext("All {count} result loaded.", "All {count} results loaded.", len(self.results)).format(count=len(self.results)))
+
+		def done(res):
+			if res is None or not current():
+				return
+			if not res.ok or not isinstance(res.data, dict):
+				if shown["first"]:
+					ui.message(_("Search failed.") + " " + res.message)
+				else:
+					ui.message(_("Could not load the rest of the results.") + " " + res.message)
+				return
+			show(res.data.get("items", []), res.data.get("total_count", 0), True)
 
 		def one(number):
 			"""One page of results: Result(data={"items", "total", "more"})."""
@@ -1110,6 +1160,8 @@ class SearchDialog(AccessibleDialog):
 		def work():
 			items, total, number = [], None, 1
 			while True:
+				if not current():
+					return None  # a newer search replaced this one, or the window was closed
 				res = one(number)
 				if not res.ok or not isinstance(res.data, dict):
 					if items:
@@ -1121,6 +1173,8 @@ class SearchDialog(AccessibleDialog):
 					total = res.data["total"]
 				if not got or not res.data["more"] or len(items) >= SEARCH_MAX_RESULTS:
 					break
+				# More pages to come: show what there is now.
+				wx.CallAfter(show, list(items), total if total is not None else len(items), False)
 				number += 1
 			items = items[:SEARCH_MAX_RESULTS]
 			return Result(200, {"items": items, "total_count": total if total is not None else len(items)}, {})
@@ -1163,8 +1217,8 @@ def gist_label(g):
 	files = list((g.get("files") or {}).keys())
 	title = g.get("description") or (files[0] if files else _("Untitled"))
 	count = len(files)
-	return _("{title}, {count} files, {visibility}, updated {date}").format(
-		title=title, count=count, visibility=_("public") if g.get("public") else _("secret"),
+	return _("{title}, {files}, {visibility}, updated {date}").format(
+		title=title, files=count_text("files", count), visibility=_("public") if g.get("public") else _("secret"),
 		date=format_date(g.get("updated_at")),
 	)
 
@@ -1336,7 +1390,10 @@ def describe(resources):
 	for key in order:
 		item = resources.get(key) or {}
 		minutes = max(0, int((item.get("reset", now) - now) // 60))
-		lines.append(_("{label}: {remaining} of {limit} left. Resets in {minutes} minutes.").format(
+		lines.append(ngettext(
+			"{label}: {remaining} of {limit} left. Resets in {minutes} minute.",
+			"{label}: {remaining} of {limit} left. Resets in {minutes} minutes.", minutes,
+		).format(
 			label=names.get(key, key.replace("_", " ")), remaining=item.get("remaining", 0),
 			limit=item.get("limit", 0), minutes=minutes,
 		))
@@ -1360,7 +1417,7 @@ def show_status(parent):
 		lines += describe((data or {}).get("resources", {}))
 		show_modal(TextViewDialog(parent, _("GitHub Status"), "\n".join(lines), label=_("&Status:")))
 
-	run_async(work, done)
+	run_from(parent, work, done)
 
 
 # ----------------------------------------------------------------------

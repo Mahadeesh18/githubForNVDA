@@ -29,7 +29,7 @@ def format_size(num):
 		value = 0.0
 	if value < 1024:
 		count = int(value)
-		return _("1 byte") if count == 1 else _("{count} bytes").format(count=count)
+		return ngettext("{count} byte", "{count} bytes", count).format(count=count)
 	for unit in ("KB", "MB", "GB"):
 		value /= 1024
 		if value < 1024 or unit == "GB":
@@ -315,7 +315,10 @@ def error_text(code, data=None, headers=None):
 		)
 		if exhausted:
 			if retry_after.isdigit():
-				return _("GitHub rate limit reached. Try again in {seconds} seconds.").format(seconds=retry_after)
+				return ngettext(
+					"GitHub rate limit reached. Try again in {seconds} second.",
+					"GitHub rate limit reached. Try again in {seconds} seconds.", int(retry_after),
+				).format(seconds=retry_after)
 			return _("GitHub rate limit reached. Wait a few minutes, or set a token to get a higher limit.")
 		if headers.get("X-GitHub-SSO"):
 			return _(
@@ -715,3 +718,160 @@ def numbered_patch(patch):
 			old += 1
 			new += 1
 	return "\n".join(out).strip("\n")
+
+
+# ----------------------------------------------------------------------
+# Forks and watching
+# ----------------------------------------------------------------------
+
+def fork_status_text(parent, branch, ahead, behind):
+	"""'This branch is 3 commits behind nvaccess/nvda:master.' and so on, as GitHub says it."""
+	where = f"{parent}:{branch}"
+	# Translators: part of how a fork's branch compares with the original, such as "3 commits ahead of".
+	ahead_text = ngettext("{count} commit ahead of", "{count} commits ahead of", ahead).format(count=ahead)
+	# Translators: part of how a fork's branch compares with the original, such as "12 commits behind".
+	behind_text = ngettext("{count} commit behind", "{count} commits behind", behind).format(count=behind)
+	if ahead and behind:
+		# Translators: {ahead} is "2 commits ahead of", {behind} is "3 commits behind", {where} is owner/repo:branch.
+		return _("This branch is {ahead} and {behind} {where}.").format(ahead=ahead_text, behind=behind_text, where=where)
+	if behind:
+		return _("This branch is {behind} {where}.").format(behind=behind_text, where=where)
+	if ahead:
+		return _("This branch is {ahead} {where}.").format(ahead=ahead_text, where=where)
+	return _("This branch is up to date with {where}.").format(where=where)
+
+
+# How GitHub can notify you about a repository. "custom" (only some kinds of events) can only be set on GitHub's
+# website; the API reports it as watching.
+WATCH_STATES = ("all", "participating", "ignore", "custom")
+
+
+def watch_state(code, data):
+	"""Your watch setting from GET /repos/{repo}/subscription: 404 means not watching."""
+	if code == 404 or not isinstance(data, dict):
+		return "participating"
+	if data.get("ignored"):
+		return "ignore"
+	return "all" if data.get("subscribed") else "participating"
+
+
+def watch_choice_labels():
+	return [
+		_("All activity: notified about every issue, pull request and release"),
+		_("Participating and mentions: notified only when you take part or are mentioned (not watching)"),
+		_("Ignore: never notified"),
+		_("Custom (choose kinds of events): opens GitHub's page"),
+	]
+
+
+def watch_state_label(state):
+	return {
+		"all": _("watching all activity"), "participating": _("not watching (participating and mentions)"),
+		"ignore": _("ignoring"), "custom": _("custom"),
+	}.get(state, state)
+
+
+def watch_toggle_target(state):
+	"""What the Watch button does from a watch setting: watch all activity when you are not watching,
+	otherwise go back to participating and mentions (unwatch, or stop ignoring)."""
+	return "all" if state == "participating" else "participating"
+
+
+# ----------------------------------------------------------------------
+# How long ago
+# ----------------------------------------------------------------------
+
+def relative_time(iso_str, now=None):
+	"""'just now', '12 minutes ago', '3 hours ago', 'yesterday', '4 days ago'; older than a week gives the date,
+	such as '14 November 2026'. iso_str is GitHub's UTC time ('2026-11-17T10:20:30Z')."""
+	from datetime import timezone
+	if not iso_str:
+		return _("unknown")
+	try:
+		moment = datetime.strptime(iso_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+	except ValueError:
+		return str(iso_str)
+	now = now or datetime.now(timezone.utc)
+	seconds = (now - moment).total_seconds()
+	if seconds < 60:
+		return _("just now")
+	minutes = int(seconds // 60)
+	if minutes < 60:
+		return ngettext("{count} minute ago", "{count} minutes ago", minutes).format(count=minutes)
+	hours = minutes // 60
+	if hours < 24:
+		return ngettext("{count} hour ago", "{count} hours ago", hours).format(count=hours)
+	# Days by the calendar in your own time zone, so last night at 23:00 is "yesterday" this morning.
+	days = (now.astimezone().date() - moment.astimezone().date()).days
+	if days <= 1:
+		return _("yesterday")
+	if days < 7:
+		return ngettext("{count} day ago", "{count} days ago", days).format(count=days)
+	local = moment.astimezone()
+	# Translators: a date, such as "14 November 2026".
+	return _("{day} {month} {year}").format(day=local.day, month=month_name(local.month), year=local.year)
+
+
+# ----------------------------------------------------------------------
+# Text box positions
+# ----------------------------------------------------------------------
+
+class TextPositions:
+	"""Translate between an index in a text and a position in the Windows text box that shows it.
+
+	A multi-line Windows edit box can count each line break as two characters (CR LF) while the text has one,
+	so every position after a line break is one further than the index. crlf says whether the box does that;
+	work it out with box.GetLastPosition() != len(text)."""
+
+	def __init__(self, text, crlf):
+		import bisect
+		self._bisect = bisect
+		self.length = len(text)
+		self.crlf = crlf
+		self.newlines = [i for i, char in enumerate(text) if char == "\n"] if crlf else []
+
+	def to_box(self, index):
+		"""The text box position of a text index."""
+		if not self.crlf:
+			return index
+		return index + self._bisect.bisect_left(self.newlines, index)
+
+	def to_text(self, position):
+		"""The text index of a text box position (a position inside a CR LF pair gives the line break)."""
+		if not self.crlf:
+			return position
+		low, high = 0, self.length
+		while low < high:  # the largest index whose position is not after `position`
+			middle = (low + high + 1) // 2
+			if self.to_box(middle) <= position:
+				low = middle
+			else:
+				high = middle - 1
+		return low
+
+
+# ----------------------------------------------------------------------
+# Counting things: "1 file", "3 files", with the right plural in every language
+# ----------------------------------------------------------------------
+
+def count_text(kind, count):
+	"""A number with its noun, such as "1 file" or "3 files". kind is the plural English noun."""
+	# Each pair is written out so the translation tools find both forms.
+	forms = {
+		"additions": lambda: ngettext("{count} addition", "{count} additions", count),
+		"comments": lambda: ngettext("{count} comment", "{count} comments", count),
+		"commits": lambda: ngettext("{count} commit", "{count} commits", count),
+		"contributions": lambda: ngettext("{count} contribution", "{count} contributions", count),
+		"days": lambda: ngettext("{count} day", "{count} days", count),
+		"deletions": lambda: ngettext("{count} deletion", "{count} deletions", count),
+		"files": lambda: ngettext("{count} file", "{count} files", count),
+		"items": lambda: ngettext("{count} item", "{count} items", count),
+		"repositories": lambda: ngettext("{count} repository", "{count} repositories", count),
+		"results": lambda: ngettext("{count} result", "{count} results", count),
+	}
+	return forms[kind]().format(count=count)
+
+
+def uploaded_text(done, total):
+	"""'Uploaded 3 of 4 files.'"""
+	return ngettext("Uploaded {ok} of {total} file.", "Uploaded {ok} of {total} files.", total).format(ok=done, total=total)

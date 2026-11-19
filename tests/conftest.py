@@ -13,6 +13,7 @@ ADDON = os.path.join(os.path.dirname(__file__), "..", "globalPlugins", "githubFo
 sys.path.insert(0, os.path.abspath(ADDON))
 
 builtins._ = lambda text: text
+builtins.ngettext = lambda singular, plural, count: singular if count == 1 else plural
 stub = types.ModuleType("addonHandler")
 stub.initTranslation = lambda: None
 sys.modules.setdefault("addonHandler", stub)

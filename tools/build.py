@@ -34,12 +34,21 @@ def manifest_version():
 # --- .po and .mo files -------------------------------------------------------
 
 def read_po(path):
-	"""{msgid: msgstr} of the translated entries that are not marked fuzzy. The header has the msgid ""."""
+	"""{msgid: msgstr} of the translated entries that are not marked fuzzy. The header has the msgid "".
+
+	A plural entry (ngettext) is stored the way .mo files keep it: the key is "singular\\0plural" and the value
+	holds every translated form, "\\0" between them."""
 	entries = {}
 	current, key, fuzzy = {}, None, False
 
 	def flush():
-		if "msgid" in current and current.get("msgstr") and not fuzzy:
+		if "msgid" not in current or fuzzy:
+			return
+		if "msgid_plural" in current:
+			forms = [current[k] for k in sorted(k for k in current if k.startswith("msgstr["))]
+			if forms and all(forms):
+				entries[current["msgid"] + "\0" + current["msgid_plural"]] = "\0".join(forms)
+		elif current.get("msgstr"):
 			entries[current["msgid"]] = current["msgstr"]
 
 	with open(path, encoding="utf-8") as f:
@@ -52,15 +61,13 @@ def read_po(path):
 					flush()
 					current, key, fuzzy = {}, None, True
 				continue
-			if line.startswith("msgid "):
-				if "msgstr" in current:
+			match = re.match(r'^(msgid_plural|msgid|msgstr\[\d+\]|msgstr)\s+(".*")$', line)
+			if match:
+				key = match.group(1)
+				if key == "msgid" and any(k.startswith("msgstr") for k in current):
 					flush()
 					current, fuzzy = {}, False
-				key = "msgid"
-				current[key] = ast.literal_eval(line[6:])
-			elif line.startswith("msgstr "):
-				key = "msgstr"
-				current[key] = ast.literal_eval(line[7:])
+				current[key] = ast.literal_eval(match.group(2))
 			elif line.startswith('"') and key:
 				current[key] += ast.literal_eval(line)
 	flush()
@@ -117,8 +124,14 @@ def python_files():
 				yield os.path.join(folder, name)
 
 
+def _string(node):
+	return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
 def extract():
-	"""{msgid: {"where": [(file, line)], "comment": text}} in the order the strings appear."""
+	"""{msgid: {"where": [(file, line)], "comment": text}} in the order the strings appear.
+
+	_("text") gives the msgid "text"; ngettext("one", "many", n) gives the plural msgid ("one", "many")."""
 	found = {}
 	for path in python_files():
 		with open(path, encoding="utf-8") as f:
@@ -127,13 +140,20 @@ def extract():
 		rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
 		calls = [
 			node for node in ast.walk(ast.parse(source, path))
-			if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_"
+			if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("_", "ngettext")
 		]
 		for node in sorted(calls, key=lambda n: (n.lineno, n.col_offset)):
-			if not node.args or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
+			if node.func.id == "ngettext":
+				forms = [_string(a) for a in node.args[:2]]
+				if len(forms) < 2 or None in forms:
+					print(f"warning: {rel}:{node.lineno}: ngettext() of something that is not two plain strings", file=sys.stderr)
+					continue
+				text = tuple(forms)
+			elif not node.args or _string(node.args[0]) is None:
 				print(f"warning: {rel}:{node.lineno}: _() of something that is not a plain string", file=sys.stderr)
 				continue
-			text = node.args[0].value
+			else:
+				text = node.args[0].value
 			comment = next((comments[r] for r in range(node.lineno, node.lineno - 4, -1) if r in comments), "")
 			entry = found.setdefault(text, {"where": [], "comment": ""})
 			entry["where"].append((rel, node.lineno))
@@ -157,15 +177,19 @@ def make_pot():
 		'msgid ""', 'msgstr ""',
 		f'"Project-Id-Version: {NAME} {manifest_version()}\\n"',
 		'"MIME-Version: 1.0\\n"', '"Content-Type: text/plain; charset=UTF-8\\n"',
-		'"Content-Transfer-Encoding: 8bit\\n"', "",
+		'"Content-Transfer-Encoding: 8bit\\n"', '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"', "",
 	]
 	for text, entry in found.items():
 		if entry["comment"]:
 			out.append("#. " + entry["comment"])
 		out.append("#: " + " ".join(f"{f}:{n}" for f, n in entry["where"]))
-		if "{" in text:
+		if "{" in "".join(text if isinstance(text, tuple) else [text]):
 			out.append("#, python-brace-format")
-		out += ["msgid " + po_string(text), 'msgstr ""', ""]
+		if isinstance(text, tuple):
+			# Translators set their language's Plural-Forms line and give one msgstr[n] for each form.
+			out += ["msgid " + po_string(text[0]), "msgid_plural " + po_string(text[1]), 'msgstr[0] ""', 'msgstr[1] ""', ""]
+		else:
+			out += ["msgid " + po_string(text), 'msgstr ""', ""]
 	path = os.path.join(ROOT, NAME + ".pot")
 	with open(path, "w", encoding="utf-8", newline="\n") as f:
 		f.write("\n".join(out))
@@ -192,9 +216,14 @@ def check():
 	problems = 0
 	for lang, path in po_files():
 		for msgid, msgstr in read_po(path).items():
-			if msgid and placeholders(msgid) != placeholders(msgstr):
-				problems += 1
-				print(f"{lang}: the {{placeholders}} differ in {msgid!r}")
+			if not msgid:
+				continue
+			# A plural entry holds several forms; each translated form must keep the English placeholders.
+			wanted = placeholders(msgid.split("\0")[-1])
+			for form in msgstr.split("\0"):
+				if placeholders(form) != wanted:
+					problems += 1
+					print(f"{lang}: the {{placeholders}} differ in {msgid.split(chr(0))[0]!r}")
 	print("Translations: no problems found." if not problems else f"Translations: {problems} problems found.")
 	return problems == 0
 

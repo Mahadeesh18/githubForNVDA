@@ -16,9 +16,9 @@ jobs:
       - name: Install test tools
         run: python -m pip install pytest pyflakes
       - name: Look for mistakes
-        # _ is the translation function NVDA installs; core.py re-exports helpers on purpose.
+        # _ and ngettext are the translation functions NVDA installs; core.py re-exports helpers on purpose.
         run: |
-          problems=$(PYFLAKES_BUILTINS=_ python -m pyflakes globalPlugins tools tests | grep -v "imported but unused" || true)
+          problems=$(PYFLAKES_BUILTINS=_,ngettext python -m pyflakes globalPlugins tools tests | grep -v "imported but unused" || true)
           if [ -n "$problems" ]; then echo "$problems"; exit 1; fi
       - name: Run the tests
         run: python -m pytest -q tests

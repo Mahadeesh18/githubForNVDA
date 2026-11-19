@@ -97,3 +97,55 @@ def test_numbered_patch():
 	assert logic.numbered_patch(patch).split("\n") == [
 		"Lines 10 to 12: def f():", "10: a", "11 removed: b", "11 added: B", "12: c",
 	]
+
+
+def test_fork_status_text():
+	assert logic.fork_status_text("o/r", "main", 0, 12) == "This branch is 12 commits behind o/r:main."
+	assert logic.fork_status_text("o/r", "main", 2, 3) == "This branch is 2 commits ahead of and 3 commits behind o/r:main."
+	assert logic.fork_status_text("o/r", "main", 0, 0) == "This branch is up to date with o/r:main."
+
+
+def test_watch_state():
+	assert logic.watch_state(404, {"message": "Not Found"}) == "participating"
+	assert logic.watch_state(200, {"subscribed": True, "ignored": False}) == "all"
+	assert logic.watch_state(200, {"subscribed": False, "ignored": True}) == "ignore"
+	assert len(logic.watch_choice_labels()) == len(logic.WATCH_STATES)
+
+
+def test_watch_toggle_target():
+	assert logic.watch_toggle_target("participating") == "all"
+	assert logic.watch_toggle_target("all") == "participating"
+	assert logic.watch_toggle_target("ignore") == "participating"
+	assert logic.watch_toggle_target("custom") == "participating"
+
+
+def test_relative_time():
+	from datetime import datetime, timezone
+	now = datetime(2026, 11, 17, 15, 0, 0, tzinfo=timezone.utc)
+	assert logic.relative_time("2026-11-17T14:59:30Z", now) == "just now"
+	assert logic.relative_time("2026-11-17T14:59:00Z", now) == "1 minute ago"
+	assert logic.relative_time("2026-11-17T14:48:00Z", now) == "12 minutes ago"
+	assert logic.relative_time("2026-11-17T12:00:00Z", now) == "3 hours ago"
+	assert logic.relative_time("2026-11-13T15:00:00Z", now) == "4 days ago"
+	assert logic.relative_time("2026-11-01T15:00:00Z", now) == "1 November 2026"
+	assert logic.relative_time("", now) == "unknown"
+
+
+def test_text_positions():
+	text = "ab\ncd\nef"
+	plain = logic.TextPositions(text, crlf=False)
+	assert plain.to_box(7) == 7 and plain.to_text(7) == 7
+	windows = logic.TextPositions(text, crlf=True)
+	# "e" is index 6 in the text, but position 8 in a box that counts each line break twice
+	assert windows.to_box(6) == 8 and windows.to_text(8) == 6
+	assert windows.to_box(0) == 0 and windows.to_box(2) == 2 and windows.to_box(3) == 4
+	for index in range(len(text) + 1):
+		assert windows.to_text(windows.to_box(index)) == index
+
+
+def test_count_text_singular_and_plural():
+	assert logic.count_text("files", 1) == "1 file"
+	assert logic.count_text("files", 3) == "3 files"
+	assert logic.count_text("repositories", 1) == "1 repository"
+	assert logic.format_size(1) == "1 byte" and logic.format_size(5) == "5 bytes"
+	assert logic.uploaded_text(1, 1) == "Uploaded 1 of 1 file."

@@ -152,6 +152,7 @@ a { color: #0b4fb3; }
 <h3>Notifications</h3>
 <p>Show unread only, all except done, only unread notifications that involve you directly (assigned, mentioned, review requested and so on), or <strong>Done</strong>. Copy Link puts the web address of the notification on the clipboard. View opens issues and pull requests directly and marks them read. Also mark as read, mute a thread and mark everything as read.</p>
 <p><strong>Mark as Done</strong> takes a notification out of your lists, so what is left is what still needs you. GitHub does not tell other programs which notifications are done, so the add-on remembers this on your computer. A done notification comes back by itself when something new happens in it, the same as on the GitHub website. <strong>Show: Done</strong> lists the ones you finished; there the button is <strong>Move Back to Inbox</strong>. Muting a thread also marks it done.</p>
+<p>Each line ends with how long ago something happened, such as <em>12 minutes ago</em>, <em>yesterday</em> or <em>4 days ago</em>; anything older than a week gives the date. Mark as Read, Mark as Done, Mute and Mark All as Read change the list at once, without loading it again, and you stay where you were: a notification marked read says <em>read</em>, and after Mark as Done or Mute the next notification is selected and read to you. <em>Announce how many unread notifications you have</em> counts all of them, not only the first 50.</p>
 <h3>Gists</h3>
 <p>List, view every file, create (filled from the clipboard, secret unless you tick public), edit single-file gists and delete.</p>
 <h3>Bookmarked Repositories</h3>
@@ -223,7 +224,7 @@ a { color: #0b4fb3; }
 <li><code>Enter</code> opens a folder or file, <code>Delete</code> deletes the selected file or folder (with write access, after a Yes/No question and a commit message) and <code>Backspace</code> goes up one folder.</li>
 <li>Buttons: <strong>Go Up</strong>, <strong>Switch Branch</strong>, <strong>Commit History</strong>, <strong>Issues</strong>, <strong>Pull Requests</strong>, <strong>Actions</strong>, <strong>Releases</strong>, <strong>View Stars</strong> and <strong>More Options</strong> (plus Star or Unstar when you have a token). <strong>View Stars</strong> opens a list of everybody who starred the repository, like the Followers list: View Profile, View Repositories, Follow or Unfollow, and Open in Browser.</li>
 <li>Repository lines read: name, language, number of stars, then Public or Private, for example <em>computershortcut, Lua, 1 star, Public</em>. One star is "1 star", any other number is "2 stars", "0 stars" and so on.</li>
-<li><strong>More Options</strong> (with write access) has:
+<li><strong>More Options</strong> has <strong>Watch Settings</strong> (see below) and, with write access:
 <ul>
 <li><strong>Create New File</strong>: type the file name with its extension, such as <code>notes.txt</code>, <code>index.html</code> or <code>script.py</code>, to create any kind of text-based file. Use Upload Files for binary files such as images.</li>
 <li><strong>Create New Folder</strong>: adds a <code>.gitkeep</code> placeholder file, because Git cannot store empty folders.</li>
@@ -239,6 +240,13 @@ a { color: #0b4fb3; }
 </ul></li>
 <li><strong>Star</strong> and <strong>Unstar</strong> are one button next to Releases, and in repository lists. <strong>More Options</strong> and the file-changing actions are shown to everyone with write, maintain or admin access to the repository (the owner, collaborators and organization members with that role). Editing the description, website address and topics needs maintain or admin access; renaming, deleting, archiving, the default branch and visibility need admin access. The repository information ends with <em>Your access</em>, which shows your role: admin, maintain, write, triage or read.</li>
 <li>Make Public or Make Private, Edit Website Address and the copy links are on the <code>Applications</code> key menu in My Repositories.</li>
+</ul>
+<h3>Watch, fork and sync</h3>
+<ul>
+<li><strong>Watch</strong> is one button that changes its name, like Star and Unstar. When you are not watching, <strong>Watch</strong> watches all activity: you are notified about every issue, pull request and release. When you are watching, <strong>Unwatch</strong> goes back to being notified only about threads you take part in or are mentioned in. When you ignore the repository, <strong>Stop Ignoring</strong> does the same. Starring a repository does not watch it: a star is a bookmark and a "like", and it sends no notifications.</li>
+<li><strong>Watch Settings</strong>, in More Options (for everyone with a token), says what is set now and offers every choice: <em>All activity</em>, <em>Participating and mentions</em>, <em>Ignore</em> (never notified) and <em>Custom</em>. Custom picks kinds of events, such as only releases; GitHub only lets you set it on its website, so it opens the repository page there.</li>
+<li><strong>Fork</strong> makes your own copy of the repository, like the Fork button on GitHub. Choose the owner (your account or one of your organizations), the name, and whether to copy only the default branch (ticked, as on GitHub). If you already have a fork of the repository, the add-on offers to open it instead. GitHub copies the repository in the background; when it is ready you are asked whether to open it. Fork is also in repository lists (starred repositories, someone's repositories) and in the My Repositories menu.</li>
+<li><strong>Sync Fork</strong> (shown for your own forks) brings the branch you are on up to date with the same branch of the repository it was forked from, like GitHub's Sync fork button. The repository information says which repository it was forked from and, a moment after it opens, whether the branch is up to date, or how many commits it is ahead or behind. When your branch has commits of its own, GitHub merges the new commits in. If both changed the same lines, GitHub cannot sync, and the add-on offers to open GitHub's page for a pull request into your fork, where the conflicts can be solved.</li>
 </ul>
 
 <h2 id="files">Viewing and editing files</h2>

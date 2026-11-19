@@ -77,6 +77,6 @@ Only Python 3 is needed:
 The add-on is ready for translation: every message goes through `_()`, and the build tool compiles translations.
 
 1. `python tools/build.py pot` writes `githubForNVDA.pot` with every message (comments starting with `Translators:` explain the hard ones).
-2. Translate it with a tool such as Poedit and save it as `locale/<language>/LC_MESSAGES/nvda.po`, for example `locale/es/LC_MESSAGES/nvda.po`. Keep the `{names}` in braces exactly as they are, and keep one `&` in labels that have one (it marks the Alt+letter shortcut).
+2. Translate it with a tool such as Poedit and save it as `locale/<language>/LC_MESSAGES/nvda.po`, for example `locale/es/LC_MESSAGES/nvda.po`. Keep the `{names}` in braces exactly as they are, and keep one `&` in labels that have one (it marks the Alt+letter shortcut). Messages with a number, such as "{count} files", have a form for each plural your language uses: set your language's *Plural-Forms* line (Poedit does it when you choose the language) and translate every form.
 3. Optionally add `locale/<language>/manifest.ini` with a translated `summary` and `description`, and a translated user guide as `doc/<language>/readme.html`.
 4. `python tools/build.py check` finds translations whose `{placeholders}` do not match. The build compiles the `.po` files itself, so do not commit `.mo` files.

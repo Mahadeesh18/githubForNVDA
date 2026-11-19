@@ -32,6 +32,7 @@ from .logic import (  # noqa: F401 - re-exported for the other modules
 	build_label,
 	checks_summary,
 	clean_branch_name,
+	count_text,
 	decode_text,
 	Decoded,
 	encode_text,
@@ -51,12 +52,14 @@ from .logic import (  # noqa: F401 - re-exported for the other modules
 	open_state_label,
 	format_month,
 	format_time,
+	fork_status_text,
 	normalize_newlines,
 	numbered_patch,
 	parse_github_link,
 	parse_label,
 	parse_link_header,
 	parse_repo_reference,
+	relative_time,
 	prune_done,
 	repo_from_api_url,
 	resolve_access_keys,
@@ -68,8 +71,15 @@ from .logic import (  # noqa: F401 - re-exported for the other modules
 	three_way_trees,
 	strip_mnemonic,
 	tail,
+	TextPositions,
 	truncate,
 	unique_path,
+	uploaded_text,
+	WATCH_STATES,
+	watch_choice_labels,
+	watch_state,
+	watch_state_label,
+	watch_toggle_target,
 	weekday_name,
 	without_done,
 )
@@ -994,6 +1004,18 @@ class AccessibleDialog(wx.Dialog):
 		return menu
 
 
+def run_from(window, work, done):
+	"""Run work() off the GUI thread, then done(result) only if `window` is still open.
+
+	Use it when done() opens another window or asks a question: if you closed `window` (pressed Escape while
+	GitHub was answering), nothing pops up afterwards. A window that is not one of the add-on's (NVDA's own
+	frame, say) is never closed, so done() always runs then."""
+	if isinstance(window, AccessibleDialog):
+		window.run(work, done)
+	else:
+		run_async(work, done)
+
+
 # ----------------------------------------------------------------------
 # Text viewer
 # ----------------------------------------------------------------------
@@ -1257,13 +1279,17 @@ def confirm_danger(parent, title, message):
 ALL_ITEMS_LIMIT = 2000
 
 
-def fetch_every_page(fetch, selections, limit=ALL_ITEMS_LIMIT):
+def fetch_every_page(fetch, selections, limit=ALL_ITEMS_LIMIT, on_page=None, keep_going=None):
 	"""Call fetch(page, selections) for page 1, 2, 3 ... and join the results into one list.
 
 	Stops after `limit` items. The returned headers contain "X-Truncated": "1" when the list was cut short,
-	either by the limit or because a later page could not be loaded."""
+	either by the limit or because a later page could not be loaded.
+	on_page(items, more) is called with each page as it arrives (more: another page follows).
+	keep_going() is asked before each further page; when it says False, loading stops early."""
 	items, page, truncated = [], 1, False
 	while True:
+		if page > 1 and keep_going is not None and not keep_going():
+			break
 		res = fetch(page, selections)
 		if not isinstance(res, Result) or not res.ok:
 			if items:
@@ -1271,7 +1297,11 @@ def fetch_every_page(fetch, selections, limit=ALL_ITEMS_LIMIT):
 				break
 			return res
 		data = res.data if isinstance(res.data, list) else []
+		room = max(0, limit - len(items))
 		items.extend(data)
+		if on_page is not None:
+			more = res.has_next and len(items) < limit and page < 200
+			on_page(data[:room], more)
 		# A page can be empty after the fetch hid some items (done notifications), so only the
 		# Link header decides whether there is more.
 		if not res.has_next:
@@ -1441,7 +1471,7 @@ class PagedListDialog(AccessibleDialog):
 
 	def _announce_filter(self):
 		if not self._dead:
-			ui.message(_("{count} matching items").format(count=len(self.shown)))
+			ui.message(ngettext("{count} matching item", "{count} matching items", len(self.shown)).format(count=len(self.shown)))
 
 	def apply_filter(self):
 		words = self.filter.GetValue().lower().split()
@@ -1463,36 +1493,96 @@ class PagedListDialog(AccessibleDialog):
 
 	# --- loading -----------------------------------------------------
 	def load(self, keep_focus=False):
-		"""(Re)load the whole list: every page is fetched and joined."""
+		"""(Re)load the whole list. The first page is shown as soon as it arrives; the following pages are
+		added to the end while you read, without moving the focus. A large list (the issues of a big
+		repository) has up to 20 pages and takes many seconds in all."""
 		self._request += 1
 		request = self._request
 		item = self.selected()
 		self._keep = self.label_fn(item) if item is not None else None
 		ui.message(_("Loading..."))
 		selections = self.selections()
+		state = {"shown": False, "count": 0, "batches": 0}
+
+		def current():
+			return request == self._request and not self._dead
+
+		def add_page(items, more):
+			"""Runs on the GUI thread for every page that arrives."""
+			if not current():
+				return
+			items = self._without_forgotten(items, prune=False)
+			labels = [self.label_fn(i) for i in items]
+			if not state["shown"]:
+				if not items and more:
+					return  # nothing to show yet: wait for the next page
+				state["shown"] = True
+				self.items, self._labels = list(items), labels
+				self.filter.ChangeValue("")
+				self.apply_filter()
+				if self.items:
+					if not keep_focus:
+						self.listbox.SetFocus()
+					if more:
+						ui.message(ngettext(
+							"{count} item so far. Loading more...", "{count} items so far. Loading more...", len(self.items),
+						).format(count=len(self.items)))
+			else:
+				self.items.extend(items)
+				self._labels.extend(labels)
+				if self.filter.GetValue().split():
+					self._refilter()
+				elif labels:
+					self.shown.extend(items)
+					self._shown_labels.extend(labels)
+					self.listbox.Append(labels)
+			state["batches"] += 1
 
 		def done(res):
-			if request != self._request:
-				return  # a newer request has replaced this one
+			if not current():
+				return  # a newer request has replaced this one, or the window was closed
 			if not isinstance(res, Result) or not res.ok:
-				ui.message(res.message if isinstance(res, Result) else _("Could not load the list."))
+				message = res.message if isinstance(res, Result) else _("Could not load the list.")
+				if state["shown"] and self.items:
+					ui.message(_("Not every item could be loaded.") + " " + message)
+				else:
+					ui.message(message)
 				return
-			self.items = res.data if isinstance(res.data, list) else []
-			self.items = self._without_forgotten(self.items)
-			self._labels = [self.label_fn(i) for i in self.items]
-			self.filter.ChangeValue("")
-			self.apply_filter()
-			if self.items:
-				text = _("{count} items").format(count=len(self.items))
-				if (res.headers or {}).get("X-Truncated"):
-					text += ". " + _("Not every item could be loaded. Open the list in your browser to see the rest.")
-				ui.message(text)
-				if not keep_focus:
-					self.listbox.SetFocus()
-			else:
+			if not state["shown"]:
+				add_page([], False)
+			self.items = self._without_forgotten(self.items)  # also forgets entries GitHub stopped listing
+			if not self.items:
 				ui.message(self.empty)
+				return
+			if (res.headers or {}).get("X-Truncated"):
+				text = ngettext(
+					"{count} item loaded, the most this list shows. Open the list in your browser to see the rest.",
+					"{count} items loaded, the most this list shows. Open the list in your browser to see the rest.",
+					len(self.items),
+				).format(count=len(self.items))
+			elif state["batches"] > 1:
+				text = ngettext("All {count} item loaded.", "All {count} items loaded.", len(self.items)).format(count=len(self.items))
+			else:
+				text = count_text("items", len(self.items))
+			ui.message(text)
 
-		self.run(lambda: fetch_every_page(self.fetch, selections), done)
+		def work():
+			return fetch_every_page(
+				self.fetch, selections,
+				on_page=lambda data, more: wx.CallAfter(_deliver, add_page, data, more),
+				keep_going=current,
+			)
+
+		self.run(work, done)
+
+	def _refilter(self):
+		"""Apply the filter again after more items arrived, keeping the selected item selected."""
+		item = self.selected()
+		self._keep = self.label_fn(item) if item is not None else None
+		focus = self.listbox.HasFocus()
+		self.apply_filter()
+		if focus:
+			self.listbox.SetFocus()
 
 	def forget(self, item):
 		"""Hide an item that was just deleted or marked done. GitHub can keep listing it for a few seconds."""
@@ -1500,14 +1590,56 @@ class PagedListDialog(AccessibleDialog):
 		if key is not None:
 			self.__dict__.setdefault("_forgotten", {})[key] = time.time()
 
-	def _without_forgotten(self, items):
+	@staticmethod
+	def _position(items, item):
+		"""Where this very item is in a list (by identity: two items can look alike), or -1."""
+		return next((i for i, x in enumerate(items) if x is item), -1)
+
+	def update_item(self, item):
+		"""Read an item's line again after it changed (marked read, say), without reloading the list or
+		moving the selection."""
+		i = self._position(self.items, item)
+		if i < 0:
+			return
+		label = self.label_fn(item)
+		self._labels[i] = label
+		j = self._position(self.shown, item)
+		if j >= 0:
+			self._shown_labels[j] = label
+			self.listbox.SetString(j, label)
+		self.refresh_actions()
+
+	def remove_item(self, item):
+		"""Take an item out of the list without reloading it. The selection moves to the next item, which is
+		returned (None when the list is now empty)."""
+		self.forget(item)  # GitHub can list it again for a few seconds; a refresh then still hides it
+		i = self._position(self.items, item)
+		if i >= 0:
+			del self.items[i]
+			del self._labels[i]
+		j = self._position(self.shown, item)
+		if j < 0:
+			return self.selected()
+		del self.shown[j]
+		del self._shown_labels[j]
+		self.listbox.Delete(j)
+		self._selected_key = None
+		if not self.shown:
+			self._after_selection()
+			return None
+		self.listbox.SetSelection(min(j, len(self.shown) - 1))
+		self._after_selection()
+		return self.selected()
+
+	def _without_forgotten(self, items, prune=True):
+		"""Hide forgotten items. prune: the list is complete, so forget entries GitHub no longer lists."""
 		forgotten = self.__dict__.get("_forgotten")
 		if not forgotten:
 			return items
 		now = time.time()
 		listed = {i.get("id") for i in items if isinstance(i, dict)}
 		for key in list(forgotten):
-			if key not in listed or now - forgotten[key] > 60:
+			if (prune and key not in listed) or now - forgotten[key] > 60:
 				forgotten.pop(key, None)
 		return [i for i in items if not (isinstance(i, dict) and i.get("id") in forgotten)]
 
@@ -1559,6 +1691,11 @@ def whats_new_text():
 			"you. It comes back by itself when something new happens in it. \"Show: Done\" lists the ones you "
 			"finished, with Move Back to Inbox."
 		),
+		_(
+			"- Working through notifications keeps your place: Mark as Read, Mark as Done and Mute change the list at "
+			"once, and after Done or Mute the next notification is read to you. Each line says how long ago, such as "
+			"\"3 hours ago\". The unread count counts all your notifications, not only the first 50."
+		),
 		_("PULL REQUESTS"),
 		_(
 			"- Resolve merge conflicts without the browser: the add-on goes through each conflict and lets you keep "
@@ -1578,6 +1715,14 @@ def whats_new_text():
 		_(
 			"- My Repositories explains which repositories GitHub lists there, and says so when an organization's "
 			"single sign-on hides some of them."
+		),
+		_("WATCH, FORK AND SYNC"),
+		_(
+			"- The repository browser has Watch and Unwatch, one button like Star and Unstar (starring does not watch "
+			"a repository; More Options, Watch Settings, has every choice), Fork (choose the owner and name, copy only "
+			"the default branch, or open the "
+			"fork you already have) and, for your own forks, Sync Fork, which brings the branch up to date with the "
+			"original. The repository information says where a fork comes from and how far behind it is."
 		),
 		_("OTHER CHANGES"),
 		_(

@@ -20,6 +20,8 @@ from logHandler import log
 from urllib.parse import quote
 
 from .core import (
+	count_text,
+	uploaded_text,
 	AccessibleDialog,
 	apply_access_keys,
 	ask_choice,
@@ -31,11 +33,13 @@ from .core import (
 	confirm,
 	confirm_danger,
 	copy_to_clipboard,
+	current_login,
 	decode_text,
 	downloads_dir,
 	encode_text,
 	escape_label,
 	format_date,
+	fork_status_text,
 	format_size,
 	get_pref,
 	gh,
@@ -53,14 +57,21 @@ from .core import (
 	prompt_text,
 	Result,
 	run_async,
+	run_from,
 	run_with_progress,
 	safe_filename,
 	say,
 	show_modal,
 	split_names,
+	TextPositions,
 	TextViewDialog,
 	truncate,
 	unique_path,
+	WATCH_STATES,
+	watch_choice_labels,
+	watch_state,
+	watch_state_label,
+	watch_toggle_target,
 )
 
 addonHandler.initTranslation()
@@ -339,11 +350,6 @@ def rename_bookmark(old_name, new_name):
 		_save_bookmarks(items)
 
 
-def remove_bookmark(full_name):
-	items = [b for b in get_bookmarks() if b.lower() != full_name.lower()]
-	_save_bookmarks(items)
-
-
 def show_bookmarks(parent):
 	from .repos import open_repo
 
@@ -392,8 +398,9 @@ def commit_summary(c):
 	lines = [
 		_("Commit {sha}").format(sha=c.get("sha", "")),
 		_("Author: {name} on {date}").format(name=author.get("name", _("unknown")), date=author.get("date", "")),
-		_("Changes: {additions} additions, {deletions} deletions in {count} files").format(
-			additions=stats.get("additions", 0), deletions=stats.get("deletions", 0), count=len(files)
+		_("Changes: {additions}, {deletions} in {files}").format(
+			additions=count_text("additions", stats.get("additions", 0)),
+			deletions=count_text("deletions", stats.get("deletions", 0)), files=count_text("files", len(files)),
 		),
 		"",
 		commit.get("message", ""),
@@ -431,7 +438,8 @@ def show_commit(parent, full, sha):
 				dialog.text.SetFocus()
 				ui.message(_("Diff loaded"))
 
-			run_async(
+			run_from(
+				dialog,
 				lambda: gh("GET", f"/repos/{full}/commits/{commit['sha']}", accept="application/vnd.github.diff"),
 				got,
 			)
@@ -446,7 +454,7 @@ def show_commit(parent, full, sha):
 			label=_("Commit &details:"),
 		))
 
-	run_async(lambda: gh("GET", f"/repos/{full}/commits/{sha}"), done)
+	run_from(parent, lambda: gh("GET", f"/repos/{full}/commits/{sha}"), done)
 
 
 def show_commits(parent, full, ref="", path=""):
@@ -482,9 +490,9 @@ def release_label(r):
 		flags.append(_("pre-release"))
 	if r.get("draft"):
 		flags.append(_("draft"))
-	text = _("{name}, tag {tag}, {date}, {count} files").format(
+	text = _("{name}, tag {tag}, {date}, {files}").format(
 		name=name, tag=r.get("tag_name"), date=format_date(r.get("published_at") or r.get("created_at")),
-		count=len(r.get("assets") or []),
+		files=count_text("files", len(r.get("assets") or [])),
 	)
 	return text + (", " + ", ".join(flags) if flags else "")
 
@@ -502,8 +510,9 @@ def release_text(r):
 	if not assets:
 		lines.append(_("No downloadable files attached."))
 	for a in assets:
-		lines.append(_("{name}, {size}, downloaded {count} times").format(
-			name=a["name"], size=format_size(a.get("size")), count=a.get("download_count", 0)
+		count = a.get("download_count", 0)
+		lines.append(ngettext("{name}, {size}, downloaded {count} time", "{name}, {size}, downloaded {count} times", count).format(
+			name=a["name"], size=format_size(a.get("size")), count=count,
 		))
 		if a.get("browser_download_url"):
 			lines.append(_("Download link: {url}").format(url=a["browser_download_url"]))
@@ -595,7 +604,8 @@ def _add_files_controls(dialog, sizer):
 			dialog.files.append(path)
 			added += 1
 		refresh()
-		ui.message(_("{count} files added. {total} in the list.").format(count=added, total=len(dialog.files)))
+		ui.message(ngettext("{count} file added.", "{count} files added.", added).format(count=added)
+			+ " " + _("{total} in the list.").format(total=len(dialog.files)))
 
 	def remove(event):
 		index = listbox.GetSelection()
@@ -690,7 +700,7 @@ def create_release(parent, full, branch, on_done=None):
 		if files:
 			if cancel is not None and cancel.is_set():
 				text += " " + _("Upload cancelled.")
-			text += " " + _("Uploaded {ok} of {total} files.").format(ok=len(uploaded), total=len(files))
+			text += " " + uploaded_text(len(uploaded), len(files))
 			if failed:
 				text += " " + _("Not uploaded: {names}").format(names="; ".join(failed[:5]))
 			elif uploaded:
@@ -700,7 +710,7 @@ def create_release(parent, full, branch, on_done=None):
 			on_done()
 
 	if not files:
-		run_async(work, done)
+		run_from(parent, work, done)
 		return
 
 	# With files to attach: show a progress window. The release itself is created first (a few percent).
@@ -763,7 +773,7 @@ def show_releases(parent, full, can_write=False, branch=""):
 			else:
 				ui.message(_("Could not delete the release.") + " " + res.message)
 
-		run_async(lambda: gh("DELETE", f"/repos/{full}/releases/{r['id']}"), done)
+		run_from(dlg, lambda: gh("DELETE", f"/repos/{full}/releases/{r['id']}"), done)
 
 	actions = [
 		(_("&View Release"), view),
@@ -989,8 +999,10 @@ class FileViewDialog(AccessibleDialog):
 		# Search the text as it is: lower-casing it first can change its length for some letters, which
 		# would put the selection in the wrong place.
 		pattern = re.compile(re.escape(self._last_search), re.IGNORECASE)
+		# The text box may count each line break as two characters; translate its positions to the text's.
+		positions = TextPositions(content, self.text.GetLastPosition() != len(content))
 		start_sel, end_sel = self.text.GetSelection()
-		start = end_sel if end_sel > start_sel else self.text.GetInsertionPoint()
+		start = positions.to_text(end_sel if end_sel > start_sel else self.text.GetInsertionPoint())
 		match = pattern.search(content, start)
 		wrapped = False
 		if match is None and start > 0:
@@ -1001,8 +1013,8 @@ class FileViewDialog(AccessibleDialog):
 			return
 		index = match.start()
 		self.text.SetFocus()
-		self.text.SetSelection(index, match.end())
-		self.text.ShowPosition(index)
+		self.text.SetSelection(positions.to_box(index), positions.to_box(match.end()))
+		self.text.ShowPosition(positions.to_box(index))
 		line = content.count("\n", 0, index) + 1
 		if wrapped:
 			ui.message(_("Search wrapped. Line {line}").format(line=line))
@@ -1025,7 +1037,7 @@ class FileViewDialog(AccessibleDialog):
 			ui.message(_("Enter a whole number."))
 			return
 		if not 1 <= number <= total:
-			ui.message(_("The file has {total} lines.").format(total=total))
+			ui.message(ngettext("The file has {total} line.", "The file has {total} lines.", total).format(total=total))
 			return
 		position = self.text.XYToPosition(0, number - 1)
 		self.text.SetFocus()
@@ -1301,7 +1313,7 @@ class ItemActions:
 				with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
 					for number, item in enumerate(items, 1):
 						if len(items) > 20 and number % 20 == 0:
-							say(_("{number} of {total} files").format(number=number, total=len(items)))
+							say(ngettext("{number} of {total} file", "{number} of {total} files", len(items)).format(number=number, total=len(items)))
 						blob = gh(
 							"GET", f"/repos/{full}/git/blobs/{item['sha']}",
 							accept="application/vnd.github.raw+json", binary=True, timeout=60,
@@ -1320,9 +1332,13 @@ class ItemActions:
 				ui.message(_("This folder has no files to download."))
 			elif res.ok:
 				path, saved, failed = res.data
-				text = _("Download complete. {count} files saved to {path}").format(count=saved, path=path)
+				text = ngettext(
+					"Download complete. {count} file saved to {path}", "Download complete. {count} files saved to {path}", saved,
+				).format(count=saved, path=path)
 				if failed:
-					text += " " + _("{count} files could not be downloaded.").format(count=failed)
+					text += " " + ngettext(
+						"{count} file could not be downloaded.", "{count} files could not be downloaded.", failed,
+					).format(count=failed)
 				ui.message(text)
 			else:
 				ui.message(_("Download failed.") + " " + res.message)
@@ -1357,7 +1373,6 @@ class ItemActions:
 			return
 		self._commit_local_files(
 			[(p, _join(base, os.path.basename(p))) for p in files], message.strip() or _("Upload file"),
-			_("Uploaded {ok} of {total} files."),
 		)
 
 	def upload_folder(self, target=None):
@@ -1385,9 +1400,13 @@ class ItemActions:
 			"All files go in one commit. Files with the same name there are replaced."
 		).format(name=name, count=len(files), size=format_size(total_size), where=where, branch=self.ref)
 		if too_big:
-			text += "\n" + _("{count} files over 50 MB will be skipped.").format(count=len(too_big))
+			text += "\n" + ngettext(
+				"{count} file over 50 MB will be skipped.", "{count} files over 50 MB will be skipped.", len(too_big),
+			).format(count=len(too_big))
 		if truncated:
-			text += "\n" + _("Only the first {count} files will be uploaded.").format(count=MAX_FOLDER_FILES)
+			text += "\n" + ngettext(
+				"Only the first {count} file will be uploaded.", "Only the first {count} files will be uploaded.", MAX_FOLDER_FILES,
+			).format(count=MAX_FOLDER_FILES)
 		if not confirm(d, text, _("Upload Folder")):
 			ui.message(_("Cancelled. Nothing was uploaded."))
 			return
@@ -1397,10 +1416,10 @@ class ItemActions:
 			return
 		self._commit_local_files(
 			[(path, _join(base, name + "/" + rel)) for path, rel, size in files],
-			message.strip() or default, _("Uploaded {ok} of {total} files."),
+			message.strip() or default,
 		)
 
-	def _commit_local_files(self, pairs, message, summary):
+	def _commit_local_files(self, pairs, message):
 		"""Upload [(local_path, repository_path)] as one commit, or file by file in an empty repository.
 
 		A progress window with a progress bar and a rising beep is shown while it runs."""
@@ -1479,15 +1498,15 @@ class ItemActions:
 				return
 			ok, failed, cancelled = res.data
 			if cancelled:
-				text = _("Upload cancelled.") + " " + (summary.format(ok=ok, total=total) if ok else _("Nothing was uploaded."))
+				text = _("Upload cancelled.") + " " + (uploaded_text(ok, total) if ok else _("Nothing was uploaded."))
 			else:
-				text = summary.format(ok=ok, total=total)
+				text = uploaded_text(ok, total)
 			if failed:
 				text += " " + _("Not uploaded: {names}").format(names="; ".join(failed[:10]))
 			ui.message(text)
 			d.load_dir(d.path)
 
-		run_with_progress(d, _("Uploading"), _("Uploading {count} files...").format(count=total), work, done)
+		run_with_progress(d, _("Uploading"), ngettext("Uploading {count} file...", "Uploading {count} files...", total).format(count=total), work, done)
 
 	# --- rename, move, duplicate, delete ---------------------------------
 	def rename(self, entry, duplicate=False):
@@ -1599,6 +1618,35 @@ class ItemActions:
 
 
 # ----------------------------------------------------------------------
+# Forks
+# ----------------------------------------------------------------------
+
+def create_fork(full, body, wait_seconds=20):
+	"""Blocking. Ask GitHub for a fork, then wait until it exists. Result data: (new full name, ready)."""
+	res = gh("POST", f"/repos/{full}/forks", body=body)
+	if res.code not in (200, 201, 202) or not isinstance(res.data, dict):
+		return res
+	new = res.data.get("full_name") or ""
+	# GitHub copies the repository in the background: the new one answers once it is ready.
+	deadline = time.time() + wait_seconds
+	while time.time() < deadline:
+		check = gh("GET", f"/repos/{new}", retries=0)
+		if check.ok:
+			return Result(200, (new, True), {})
+		time.sleep(2)
+	return Result(200, (new, False), {})
+
+
+def fork_status(full, parent, branch):
+	"""Blocking. (ahead, behind) of a fork's branch against the same branch of its parent, or None if unknown."""
+	owner = parent.split("/")[0]
+	res = gh("GET", f"/repos/{full}/compare/{q(owner)}:{q(branch, '/')}...{q(branch, '/')}", params={"per_page": 1})
+	if not res.ok or not isinstance(res.data, dict):
+		return None
+	return res.data.get("ahead_by", 0), res.data.get("behind_by", 0)
+
+
+# ----------------------------------------------------------------------
 # repoactions.py: Actions on one repository, shared by My Repositories and the repository browser.
 # ----------------------------------------------------------------------
 
@@ -1619,6 +1667,7 @@ class RepoActions:
 		self.on_deleted = on_deleted
 		self.ref_fn = ref_fn
 		self.starred = None  # None until checked
+		self.watching = None  # one of WATCH_STATES, None until checked
 
 	# --- helpers -----------------------------------------------------
 	@property
@@ -1776,20 +1825,234 @@ class RepoActions:
 	def toggle_bookmark(self):
 		ui.message(_("Bookmark added") if toggle_bookmark(self.full) else _("Bookmark removed"))
 
+	# --- fork ----------------------------------------------------------
 	def fork(self):
-		if not confirm(self.dialog, _("Fork {name} into your account?").format(name=self.full), _("Fork Repository")):
+		"""Fork the repository, like the Fork button on GitHub: choose the owner, the name and whether only the
+		default branch is copied. If you already have a fork of it, offer to open that one instead."""
+		if not has_token():
+			ui.message(_("Set your token first to fork repositories."))
 			return
-		ui.message(_("Forking..."))
+		ui.message(_("Checking your forks..."))
+		full, name = self.full, self.repo.get("name") or self.full.split("/")[-1]
 
-		def done(res):
-			if res.code in (200, 201, 202) and isinstance(res.data, dict):
-				ui.message(_("Fork created: {name}. It may take a moment to appear.").format(
-					name=res.data.get("full_name", "")
-				))
-			else:
+		def work():
+			me = current_login()
+			if not me:
+				return Problem(_("Could not find your account. Check your token."))
+			mine = gh("GET", f"/repos/{q(me)}/{q(name)}")
+			existing = None
+			if mine.ok and isinstance(mine.data, dict) and mine.data.get("fork"):
+				parents = {((mine.data.get(k) or {}).get("full_name") or "").lower() for k in ("parent", "source")}
+				if full.lower() in parents:
+					existing = mine.data["full_name"]
+			orgs = gh_paged("/user/orgs", max_items=200)
+			names = [o.get("login") for o in (orgs.data if orgs.ok else []) if o.get("login")]
+			return Result(200, (me, existing, names), {})
+
+		def checked(res):
+			if not res.ok:
 				ui.message(_("Fork failed.") + " " + res.message)
+				return
+			me, existing, orgs = res.data
+			own = (self.repo.get("owner") or {}).get("login", "").lower() == me.lower()
+			if own and not orgs:
+				ui.message(_("This repository is yours. GitHub only lets you fork it into one of your organizations, and you have none."))
+				return
+			if existing:
+				if confirm(self.dialog, _("You already have a fork of {name}: {fork}. Open it?").format(name=full, fork=existing), _("Fork Repository")):
+					open_repo(self.dialog, existing)
+				return
+			# Your own repository can only be forked into an organization.
+			owners = orgs if own else [me] + orgs
+			values = ask_form(
+				self.dialog, _("Fork {name}").format(name=full),
+				[(_("Repository &name:"), "name", False, name, True)],
+				choices=[(_("&Owner:"), "owner", owners, 0)],
+				checks=[(_("Copy the &default branch only"), "default_only", True)],
+				ok_label=_("&Create Fork"),
+			)
+			if not values:
+				return
+			body = {"name": values["name"].strip(), "default_branch_only": bool(values["default_only"])}
+			if owners[values["owner"]] != me:
+				body["organization"] = owners[values["owner"]]
+			if not valid_repo_name(body["name"]):
+				ui.message(_("Use only letters, numbers, dots, hyphens and underscores in the name."))
+				return
+			ui.message(_("Forking..."))
+			self.dialog.run(lambda: create_fork(full, body), created)
 
-		self.dialog.run(lambda: gh("POST", f"/repos/{self.full}/forks", body={}), done)
+		def created(res):
+			if not res.ok:
+				ui.message(_("Fork failed.") + " " + res.message)
+				return
+			new, ready = res.data
+			if not ready:
+				ui.message(_("GitHub is still copying the repository. Your fork {name} will appear in My Repositories in a moment.").format(name=new))
+				return
+			if confirm(self.dialog, _("Fork created: {name}. Open it now?").format(name=new), _("Fork Repository")):
+				open_repo(self.dialog, new)
+			else:
+				ui.message(_("Fork created: {name}.").format(name=new))
+
+		self.dialog.run(work, checked)
+
+	# --- sync fork -------------------------------------------------------
+	def is_fork(self):
+		return bool(self.repo.get("fork"))
+
+	def sync_fork(self, after=None):
+		"""Bring a branch of your fork up to date with the repository it was forked from (GitHub's Sync fork)."""
+		if not self.is_fork():
+			ui.message(_("{name} is not a fork.").format(name=self.full))
+			return
+		if not permissions(self.repo)[0]:
+			ui.message(_("You need write access to {name} to sync it.").format(name=self.full))
+			return
+		full, branch = self.full, self.ref()
+		ui.message(_("Comparing with the original repository..."))
+
+		def work():
+			repo = self.repo if self.repo.get("parent") else (gh("GET", f"/repos/{full}").data or {})
+			parent = (repo.get("parent") or {}).get("full_name")
+			if not parent:
+				return Problem(_("GitHub did not say which repository this was forked from."))
+			return Result(200, (parent, fork_status(full, parent, branch)), {})
+
+		def compared(res):
+			if not res.ok:
+				ui.message(_("Could not sync the fork.") + " " + res.message)
+				return
+			parent, status = res.data
+			if status and status[1] == 0:
+				ui.message(_("{branch} is already up to date with {parent}.").format(branch=branch, parent=parent))
+				return
+			question = _("Sync {branch} of {name} with {parent}?").format(branch=branch, name=full, parent=parent)
+			if status:
+				question += " " + fork_status_text(parent, branch, *status)
+			if not confirm(self.dialog, question, _("Sync Fork")):
+				return
+			ui.message(_("Syncing..."))
+			self.dialog.run(lambda: gh("POST", f"/repos/{full}/merge-upstream", body={"branch": branch}), lambda r: synced(r, parent))
+
+		def synced(res, parent):
+			if res.ok:
+				kind = (res.data or {}).get("merge_type") if isinstance(res.data, dict) else ""
+				if kind == "none":
+					ui.message(_("{branch} was already up to date.").format(branch=branch))
+				elif kind == "merge":
+					ui.message(_("Synced. {branch} has its own commits, so GitHub made a merge commit.").format(branch=branch))
+				else:
+					ui.message(_("Synced. {branch} now matches {parent}.").format(branch=branch, parent=parent))
+				if after:
+					after()
+			elif res.code == 409:
+				compare = f"https://github.com/{full}/compare/{q(branch, '/')}...{parent.split('/')[0]}:{q(branch, '/')}"
+				if confirm(self.dialog, _(
+					"GitHub cannot sync {branch} because your commits and the new commits of {parent} change the same "
+					"lines. Open GitHub's page to make a pull request into your fork, where the conflicts can be solved?"
+				).format(branch=branch, parent=parent), _("Sync Fork"), warning=True):
+					open_url(compare)
+			elif res.code == 422:
+				ui.message(_("{parent} has no branch called {branch}, so there is nothing to sync it with.").format(parent=parent, branch=branch))
+			else:
+				ui.message(_("Could not sync the fork.") + " " + res.message)
+
+		self.dialog.run(work, compared)
+
+	# --- watch -------------------------------------------------------------
+	def check_watch(self, done=None):
+		"""Find out how you watch this repository (self.watching), then call done()."""
+		if not has_token():
+			if done:
+				done()
+			return
+		full = self.full
+
+		def got(res):
+			if res.code in (200, 404):
+				self.watching = watch_state(res.code, res.data)
+			if done:
+				done()
+
+		self.dialog.run(lambda: gh("GET", f"/repos/{full}/subscription"), got)
+
+	def watch_label(self):
+		"""The Watch button's name: what pressing it does now."""
+		return {
+			"participating": _("&Watch"), "ignore": _("Stop &Ignoring"),
+		}.get(self.watching, _("Un&watch"))
+
+	def toggle_watch(self, after=None):
+		"""Watch all activity, or stop watching (or stop ignoring) at once, like Star and Unstar."""
+		if self.watching is None:
+			ui.message(_("Still checking watch settings."))
+			return
+		self._set_watch(watch_toggle_target(self.watching), after)
+
+	def _set_watch(self, wanted, after=None):
+		full = self.full
+
+		def work():
+			if wanted == "participating":
+				return gh("DELETE", f"/repos/{full}/subscription")
+			return gh("PUT", f"/repos/{full}/subscription", body={"subscribed": wanted == "all", "ignored": wanted == "ignore"})
+
+		def saved(result):
+			if result.ok:
+				was_ignoring = self.watching == "ignore"
+				self.watching = wanted
+				if wanted == "participating" and was_ignoring:
+					ui.message(_("Stopped ignoring {name}: you get notified when you take part or are mentioned.").format(name=full))
+				else:
+					ui.message({
+						"all": _("Watching {name}: you get notified about all its activity."),
+						"participating": _("Not watching {name}: you only get notified when you take part or are mentioned."),
+						"ignore": _("Ignoring {name}: you never get notified about it."),
+					}[wanted].format(name=full))
+				if after:
+					after()
+			else:
+				ui.message(_("Could not change the watch settings.") + " " + result.message)
+
+		self.dialog.run(work, saved)
+
+	def watch(self, after=None):
+		"""Choose how GitHub notifies you about this repository, like the Watch button on GitHub."""
+		if not has_token():
+			ui.message(_("Set your token first to watch repositories."))
+			return
+		full = self.full
+		ui.message(_("Checking watch settings..."))
+
+		def got(res):
+			if res.code not in (200, 404):
+				ui.message(_("Could not read the watch settings.") + " " + res.message)
+				return
+			current = watch_state(res.code, res.data)
+			self.watching = current
+			labels = watch_choice_labels()
+			index = ask_choice(
+				self.dialog, _("Watch {name}").format(name=full),
+				_("Now: {state}. Starring a repository does not watch it. Choose how GitHub notifies you about {name}:").format(
+					state=watch_state_label(current), name=full),
+				labels, WATCH_STATES.index(current),
+			)
+			if index is None:
+				return
+			wanted = WATCH_STATES[index]
+			if wanted == "custom":
+				open_url(f"https://github.com/{full}")
+				ui.message(_("Choose Watch, then Custom, on GitHub's page. GitHub's API cannot set it."))
+				return
+			if wanted == current:
+				ui.message(_("Nothing was changed."))
+				if after:
+					after()  # the button name may have been out of date
+				return
+			self._set_watch(wanted, after)
+
+		self.dialog.run(lambda: gh("GET", f"/repos/{full}/subscription"), got)
 
 	def copy_clone_url(self):
 		copy_to_clipboard(self.repo.get("clone_url", f"https://github.com/{self.full}.git"), _("Clone URL copied."))
@@ -1900,7 +2163,15 @@ class RepoActions:
 		if has_token():
 			entries.append((_("Un&star") if self.starred else _("&Star"), self.toggle_star))
 		entries += [
-			(_("&Fork Repository"), self.fork),
+			(_("&Fork Repository..."), self.fork),
+		]
+		if self.is_fork() and permissions(self.repo)[0]:
+			entries.append((_("S&ync Fork..."), self.sync_fork))
+		if has_token():
+			if self.watching is not None:
+				entries.append((self.watch_label(), self.toggle_watch))
+			entries.append((_("Watch &Settings..."), self.watch))
+		entries += [
 			(_("Copy &Clone URL"), self.copy_clone_url),
 			(_("Copy Repository &Link"), self.copy_link),
 			(_("Copy ZIP L&ink"), self.copy_zip_link),
@@ -1926,7 +2197,7 @@ def star_count_text(count):
 		count = int(count or 0)
 	except (TypeError, ValueError):
 		count = 0
-	return _("1 star") if count == 1 else _("{count} stars").format(count=count)
+	return ngettext("{count} star", "{count} stars", count).format(count=count)
 
 
 def repo_label(r):
@@ -1973,7 +2244,7 @@ def repo_info_text(repo, can_write=None, can_admin=None):
 		_("Topics: {topics}.").format(topics=topics),
 		_("Last updated: {date}.").format(date=updated),
 		_("Your access: {access}.").format(access=access_level(repo)),
-	])
+	] + ([_("Forked from: {parent}.").format(parent=repo["parent"]["full_name"])] if (repo.get("parent") or {}).get("full_name") else []))
 
 
 class RepoBrowserDialog(AccessibleDialog):
@@ -2033,7 +2304,17 @@ class RepoBrowserDialog(AccessibleDialog):
 		self.btn_star = self.add_button(row, _("&Star"), self.on_star)
 		self.btn_star.Enable(False)
 		self.btn_star.Show(self.has_token)
-		# More Options holds the file and branch actions, so only people with write access (or more) get the button.
+		# Watch / Unwatch / Stop Ignoring is one button that changes its name, like Star and Unstar.
+		# Every watch setting is in More Options, Watch Settings.
+		self.btn_watch = self.add_button(row, _("&Watch"), self.on_watch)
+		self.btn_watch.Enable(False)
+		self.btn_watch.Show(self.has_token)
+		self.btn_fork = self.add_button(row, _("F&ork..."), lambda e: self.actions.fork())
+		self.btn_fork.Show(self.has_token)
+		# Sync Fork only for your own forks (you need write access to bring them up to date).
+		self.btn_sync = self.add_button(row, _("S&ync Fork..."), lambda e: self.actions.sync_fork(after=self._after_sync))
+		self.btn_sync.Show(self._can_sync())
+		# More Options holds the file and branch actions (write access or more) and Watch Settings (anyone with a token).
 		self.btn_more = self.add_button(row, _("&More Options"), self.on_more_options)
 		self.btn_more.Show(bool(self._more_entries()))
 		row.Add(self.close_button(), 0, wx.ALL, 3)
@@ -2042,6 +2323,9 @@ class RepoBrowserDialog(AccessibleDialog):
 		self.layout(sizer)
 		if self.has_token:
 			self.actions.check_star(self._update_star_button)
+			self.actions.check_watch(self._update_watch_button)
+		self.fork_line = ""
+		self.check_fork_status()
 		self.load_dir(path)
 
 	# --- context for sub windows ---------------------------------------
@@ -2097,7 +2381,7 @@ class RepoBrowserDialog(AccessibleDialog):
 			if data and not _attempt:
 				self.listbox.SetFocus()
 			if not _attempt:
-				ui.message(_("{count} items").format(count=len(data)) if data else _("This folder is empty"))
+				ui.message(count_text("items", len(data)) if data else _("This folder is empty"))
 			pending, self._open_after_load = self._open_after_load, None
 			if pending:
 				wx.CallAfter(self.open_entry, pending)
@@ -2130,7 +2414,7 @@ class RepoBrowserDialog(AccessibleDialog):
 
 	def _announce_search(self):
 		if self.alive:
-			ui.message(_("{count} matching items").format(count=len(self.shown)))
+			ui.message(ngettext("{count} matching item", "{count} matching items", len(self.shown)).format(count=len(self.shown)))
 
 	def _selected(self):
 		i = self.listbox.GetSelection()
@@ -2192,6 +2476,9 @@ class RepoBrowserDialog(AccessibleDialog):
 			if index is not None:
 				self.ref = names[index]
 				ui.message(_("Branch {name}").format(name=self.ref))
+				self.fork_line = ""
+				self.info.SetValue(self._info_text())
+				self.check_fork_status()
 				self.load_dir("")
 
 		self.run(lambda: list_branches(self.full), done)
@@ -2276,6 +2563,33 @@ class RepoBrowserDialog(AccessibleDialog):
 		)
 
 	# --- menus --------------------------------------------------------------
+	# --- forks -----------------------------------------------------------
+	def _can_sync(self):
+		return self.has_token and bool(self.repo.get("fork")) and self.can_write
+
+	def _info_text(self):
+		text = repo_info_text(self.repo, self.can_write, self.can_admin)
+		return text + ("\n" + self.fork_line if self.fork_line else "")
+
+	def check_fork_status(self):
+		"""For a fork: find out quietly how far the current branch is ahead of or behind the original."""
+		parent = (self.repo.get("parent") or {}).get("full_name")
+		if not parent or not self.has_token:
+			return
+		full, branch = self.full, self.ref
+
+		def done(status):
+			if status is None or branch != self.ref:
+				return
+			self.fork_line = fork_status_text(parent, branch, *status)
+			self.info.SetValue(self._info_text())
+
+		self.run(lambda: fork_status(full, parent, branch), done)
+
+	def _after_sync(self):
+		self.check_fork_status()
+		self.load_dir(self.path)
+
 	def _repo_changed(self, repo):
 		"""Refresh the window after the repository was renamed, edited or archived."""
 		self.repo = repo
@@ -2283,7 +2597,7 @@ class RepoBrowserDialog(AccessibleDialog):
 		self.full = repo["full_name"]
 		self.can_write, self.can_admin = permissions(repo)
 		self.SetTitle(self.full)
-		self.info.SetValue(repo_info_text(repo, self.can_write, self.can_admin))
+		self.info.SetValue(self._info_text())
 		show_more = bool(self._more_entries())
 		if self.btn_more.IsShown() != show_more:
 			self.btn_more.Show(show_more)
@@ -2305,29 +2619,47 @@ class RepoBrowserDialog(AccessibleDialog):
 			delta = 1 if self.actions.starred else -1
 			count = max(0, int(self.repo.get("stargazers_count", 0) or 0) + delta)
 			self.repo["stargazers_count"] = count
-			self.info.SetValue(repo_info_text(self.repo, self.can_write, self.can_admin))
+			self.info.SetValue(self._info_text())
 			self._update_star_button()
 
 		self.actions.toggle_star(after=changed)
 
 	def _more_entries(self):
-		"""The repository-wide write actions."""
-		if not self.can_write:
-			return []
-		return [
-			(_("Create &New File..."), self.on_new_file),
-			(_("Create New F&older..."), self.on_new_folder),
-			(_("&Upload Files..."), self.on_upload),
-			(_("Upload Fol&der..."), self.on_upload_folder),
-			(_("Create &Branch..."), self.on_new_branch),
-			(_("Delete Current B&ranch..."), self.on_delete_branch),
-		]
+		"""The repository-wide write actions, and the watch settings (for everyone with a token)."""
+		entries = []
+		if self.can_write:
+			entries += [
+				(_("Create &New File..."), self.on_new_file),
+				(_("Create New F&older..."), self.on_new_folder),
+				(_("&Upload Files..."), self.on_upload),
+				(_("Upload Fol&der..."), self.on_upload_folder),
+				(_("Create &Branch..."), self.on_new_branch),
+				(_("Delete Current B&ranch..."), self.on_delete_branch),
+			]
+		if self.has_token:
+			if entries:
+				entries.append(None)
+			entries.append((_("Watch &Settings..."), lambda: self.actions.watch(after=self._update_watch_button)))
+		return entries
+
+	# --- watch -----------------------------------------------------------
+	def _update_watch_button(self):
+		"""Name the Watch button after what it will do now."""
+		if self._dead or self.actions.watching is None:
+			return
+		self.btn_watch.SetLabel(self.actions.watch_label())
+		self.btn_watch.Enable(True)
+		apply_access_keys(self)
+		self._button_row.Layout()
+
+	def on_watch(self, event):
+		self.actions.toggle_watch(after=self._update_watch_button)
 
 	def on_more_options(self, event):
 		"""The More Options menu: everything the buttons and the repository menu do not cover."""
 		entries = self._more_entries()
 		if not entries:
-			ui.message(_("You need write access to this repository to use More Options."))
+			ui.message(_("Set your token first to use More Options."))
 			return
 		if event is not None and isinstance(event, wx.ContextMenuEvent):
 			self.popup_menu(entries, self.menu_position(event, self.listbox))
@@ -2549,6 +2881,7 @@ def show_repo_list(parent, title, url, params=None, empty=None, unwrap_items=Fal
 	]
 	if has_token():
 		actions.append((star_label, star))
+		actions.append((_("F&ork..."), lambda d, r: RepoActions(d, r).fork()))
 	show_modal(PagedListDialog(
 		parent, title, fetch, repo_label, actions, empty=empty or _("No repositories found."),
 		on_select=on_select,
@@ -2772,7 +3105,7 @@ class MyReposDialog(AccessibleDialog):
 			if waiting:
 				self._schedule_recheck(attempt + 1)
 			if not quiet:
-				text = _("{count} repositories").format(count=len(self.raw))
+				text = count_text("repositories", len(self.raw))
 				if "partial-results" in str((repos.headers or {}).get("X-GitHub-SSO", "")):
 					text += ". " + _(
 						"Some organization repositories are hidden because your token is not authorized for the "
@@ -2830,7 +3163,7 @@ class MyReposDialog(AccessibleDialog):
 		position = self.menu_position(event, self.listbox)
 		actions = self._actions(repo)
 		# Learn whether the repository is starred first, so the menu says Star or Unstar correctly.
-		actions.check_star(lambda: self.popup_menu(actions.menu_entries(), position))
+		actions.check_star(lambda: actions.check_watch(lambda: self.popup_menu(actions.menu_entries(), position)))
 
 	def on_create(self, event):
 		created = create_repository(self)
@@ -2867,7 +3200,7 @@ def open_repo(parent, full_name, ref=None, path="", open_file=None):
 		else:
 			ui.message(_("Could not open {name}.").format(name=full_name) + " " + res.message)
 
-	run_async(lambda: gh("GET", f"/repos/{full_name}"), done)
+	run_from(parent, lambda: gh("GET", f"/repos/{full_name}"), done)
 
 
 def open_blob_or_tree(parent, ref):
@@ -2897,7 +3230,7 @@ def open_blob_or_tree(parent, ref):
 		else:
 			show_modal(RepoBrowserDialog(parent, repo, branch, path))
 
-	run_async(work, done)
+	run_from(parent, work, done)
 
 
 def open_link(parent, text):

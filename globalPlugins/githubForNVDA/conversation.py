@@ -14,6 +14,7 @@ import zipfile
 from logHandler import log
 
 from .core import (
+	count_text,
 	AccessibleDialog,
 	apply_access_keys,
 	ask_choice,
@@ -39,6 +40,7 @@ from .core import (
 	Result,
 	review_state_label,
 	run_async,
+	run_from,
 	show_modal,
 	split_names,
 	tail,
@@ -121,9 +123,9 @@ def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), in
 		lines.append(_("Branches: {head} into {base}.").format(
 			head=(pr.get("head") or {}).get("label", "?"), base=(pr.get("base") or {}).get("label", "?")
 		))
-		lines.append(_("Changes: {additions} additions, {deletions} deletions in {files} files, {commits} commits.").format(
-			additions=pr.get("additions", 0), deletions=pr.get("deletions", 0),
-			files=pr.get("changed_files", 0), commits=pr.get("commits", 0),
+		lines.append(_("Changes: {additions}, {deletions} in {files}, {commits}.").format(
+			additions=count_text("additions", pr.get("additions", 0)), deletions=count_text("deletions", pr.get("deletions", 0)),
+			files=count_text("files", pr.get("changed_files", 0)), commits=count_text("commits", pr.get("commits", 0)),
 		))
 		if pr.get("merged"):
 			lines.append(_("This pull request has been merged."))
@@ -570,9 +572,9 @@ def state_choices():
 def issue_label(i):
 	labels = ", ".join(label["name"] for label in i.get("labels") or [] if isinstance(label, dict))
 	# Translators: one issue in a list. {state} is open or closed, {date} is a date such as 2026-11-14.
-	text = _("#{number}, {title}, {state}, by {author}, {comments} comments, updated {date}").format(
+	text = _("#{number}, {title}, {state}, by {author}, {comments}, updated {date}").format(
 		number=i["number"], title=i["title"], state=_("open") if i["state"] == "open" else _("closed"),
-		author=(i.get("user") or {}).get("login", _("unknown")), comments=i.get("comments", 0),
+		author=(i.get("user") or {}).get("login", _("unknown")), comments=count_text("comments", i.get("comments", 0)),
 		date=format_date(i.get("updated_at")),
 	)
 	return text + (_(", labels: {labels}").format(labels=labels) if labels else "")
@@ -729,9 +731,9 @@ def create_pull_request(parent, full, head_hint="", base_hint="", on_done=None):
 			else:
 				ui.message(_("Could not create the pull request.") + " " + result.message)
 
-		run_async(lambda: gh("POST", f"/repos/{full}/pulls", body=body), created)
+		run_from(parent, lambda: gh("POST", f"/repos/{full}/pulls", body=body), created)
 
-	run_async(lambda: list_branches(full), got)
+	run_from(parent, lambda: list_branches(full), got)
 
 
 def _merge_key(item, sort):
@@ -814,7 +816,7 @@ def show_my_work(parent):
 			title, query, empty = views[index]
 			search_results_dialog(parent, title, query, empty)
 
-	run_async(current_login, done)
+	run_from(parent, current_login, done)
 
 
 # ----------------------------------------------------------------------
@@ -932,7 +934,7 @@ def show_run(parent, full, run_id, can_write=None):
 					label=_("&Log (the end comes last):"), wrap=False,
 				))
 
-			run_async(lambda: gh("GET", f"/repos/{full}/actions/runs/{run_id}/logs", binary=True, timeout=120), got)
+			run_from(dialog, lambda: gh("GET", f"/repos/{full}/actions/runs/{run_id}/logs", binary=True, timeout=120), got)
 
 		def rerun(dialog, failed_only):
 			if not confirm(dialog, _("Run this workflow again?")):
@@ -969,7 +971,7 @@ def show_run(parent, full, run_id, can_write=None):
 			buttons=buttons, label=_("Run &details:"),
 		))
 
-	run_async(work, done)
+	run_from(parent, work, done)
 
 
 def show_runs(parent, full, ref="", can_write=False):

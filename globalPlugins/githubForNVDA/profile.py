@@ -43,6 +43,7 @@ from .core import (
 	TextViewDialog,
 	weekday_name,
 )
+from .logic import count_text as counted
 from .repos import (
 	q,
 	toggle_bookmark,
@@ -239,10 +240,6 @@ def show_pinned(parent, login="", own=True):
 # Contribution graph
 # ----------------------------------------------------------------------
 
-def _plural(count, one, many):
-	return one if count == 1 else many
-
-
 def contribution_text(calendar):
 	"""The contribution graph as plain text: a summary, month totals and one line per week."""
 	weeks = [w.get("contributionDays") or [] for w in calendar.get("weeks") or []]
@@ -256,7 +253,8 @@ def contribution_text(calendar):
 	lines.append(_("Days with contributions: {active} of {total}").format(active=active, total=len(days)))
 	best = max(days, key=lambda d: d["contributionCount"])
 	if best["contributionCount"] > 0:
-		lines.append(_("Busiest day: {date}, {count} contributions").format(date=best["date"], count=best["contributionCount"]))
+		lines.append(_("Busiest day: {date}, {contributions}").format(
+			date=best["date"], contributions=counted("contributions", best["contributionCount"])))
 
 	longest = run = 0
 	for d in days:
@@ -270,8 +268,8 @@ def contribution_text(calendar):
 			continue  # today may not have a contribution yet
 		else:
 			break
-	lines.append(_("Longest streak: {count} days").format(count=longest))
-	lines.append(_("Current streak: {count} days").format(count=current))
+	lines.append(_("Longest streak: {days}").format(days=counted("days", longest)))
+	lines.append(_("Current streak: {days}").format(days=counted("days", current)))
 
 	lines += ["", _("Contributions by month:")]
 	months = {}
@@ -288,7 +286,8 @@ def contribution_text(calendar):
 		detail = ", ".join(
 			f"{weekday_name(d.get('weekday', 0))} {d['contributionCount']}" for d in week
 		)
-		lines.append(_("Week of {date}: {count} contributions. {detail}").format(date=week[0]["date"], count=count, detail=detail))
+		lines.append(_("Week of {date}: {contributions}. {detail}").format(
+			date=week[0]["date"], contributions=counted("contributions", count), detail=detail))
 	return "\n".join(lines)
 
 
