@@ -1327,11 +1327,20 @@ class PagedListDialog(AccessibleDialog):
 	         refresh_actions() is called.
 	on_select: optional fn(dialog, item) called when the selected item changes.
 	choices: [(label, [options])] drop-downs; changing one reloads the list.
+	filter_choices: optional fn(items) -> [(key, text, test(item))]. Replaces the filter box with a Filter
+	         drop-down built from the loaded items, each entry with its count; the first entry should match
+	         everything. Choosing one filters at once, without reloading.
+	filtered_label: optional fn(item) -> str, the line read while a Filter entry other than All is chosen
+	         (it can leave out what the filter already says, such as "pull request").
 	"""
 
 	def __init__(self, parent, title, fetch, label, actions, empty=None, choices=None, info="",
-				size=(780, 600), on_select=None, refresh=True, filter_box=True, menu_extra=None):
+				size=(780, 600), on_select=None, refresh=True, filter_box=True, menu_extra=None,
+				filter_choices=None, filtered_label=None):
 		super().__init__(parent, title, size)
+		self.filter_choices = filter_choices
+		self.filtered_label = filtered_label
+		self._filter_entries = []  # (key, text, test) shown in the Filter drop-down
 		self.fetch, self.label_fn, self.actions = fetch, label, actions
 		self.on_select = on_select
 		self.refresh_button = refresh  # False: no Refresh button and no F5 (for lists that never change)
@@ -1364,7 +1373,19 @@ class PagedListDialog(AccessibleDialog):
 		self.filter = wx.TextCtrl(self)
 		self.filter.Bind(wx.EVT_TEXT, self._on_filter_text)
 		filter_row.Add(self.filter, 1, wx.ALL, PAD)
-		if filter_box:
+		self.filter_choice = None
+		if filter_choices is not None:
+			# The drop-down takes the place of the box, which stays (empty and hidden) so the rest of the code works.
+			filter_label.Hide()
+			self.filter.Hide()
+			row = wx.BoxSizer(wx.HORIZONTAL)
+			row.Add(make_label(self, _("Fil&ter:")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, PAD)
+			self.filter_choice = wx.Choice(self)
+			self.filter_choice.Bind(wx.EVT_CHOICE, lambda e: self.apply_filter())
+			row.Add(self.filter_choice, 1, wx.ALL, PAD)
+			sizer.Add(row, 0, wx.EXPAND)
+			sizer.Add(filter_row, 0)
+		elif filter_box:
 			sizer.Add(filter_row, 0, wx.EXPAND)
 		else:
 			# Kept (empty and hidden) so the rest of the code works; it is not on screen and not in the Tab order.
@@ -1407,6 +1428,8 @@ class PagedListDialog(AccessibleDialog):
 			self.run_default()
 		elif code == wx.WXK_F5 and self.refresh_button:
 			self.load()
+		elif code == ord("F") and event.ControlDown() and self.filter_choice is not None:
+			self.filter_choice.SetFocus()
 		elif code == ord("F") and event.ControlDown() and self.filter.IsShown():
 			self.filter.SetFocus()
 		else:
@@ -1473,11 +1496,49 @@ class PagedListDialog(AccessibleDialog):
 		if not self._dead:
 			ui.message(ngettext("{count} matching item", "{count} matching items", len(self.shown)).format(count=len(self.shown)))
 
+	def _chosen_filter(self):
+		"""The test of the entry chosen in the Filter drop-down, or None when there is no drop-down or All is chosen."""
+		choice = getattr(self, "filter_choice", None)
+		if choice is None:
+			return None
+		i = choice.GetSelection()
+		return self._filter_entries[i][2] if 0 < i < len(self._filter_entries) else None
+
+	def _filtering(self):
+		return bool(self.filter.GetValue().split()) or self._chosen_filter() is not None
+
+	def update_filter_choices(self):
+		"""Rebuild the Filter drop-down from the items now in the list, keeping the chosen entry when it is
+		still there (All otherwise). Each entry says how many items it matches. The drop-down is only changed
+		when its entries did, so NVDA does not read it again for nothing. True when the chosen entry was lost."""
+		choice = getattr(self, "filter_choice", None)
+		if choice is None:
+			return False
+		i = choice.GetSelection()
+		key = self._filter_entries[i][0] if 0 <= i < len(self._filter_entries) else None
+		entries = filter_entries(self.filter_choices, self.items)
+		keys = [k for k, _text, _test in entries]
+		index = keys.index(key) if key in keys else 0
+		texts = [text for _key, text, _test in entries]
+		if texts != [text for _key, text, _test in self._filter_entries]:
+			choice.Set(texts)
+		self._filter_entries = entries
+		if choice.GetSelection() != index:
+			choice.SetSelection(index)
+		return key is not None and key not in keys
+
+	def line(self, item, label=None):
+		"""The line the list shows for an item: the shorter filtered_label while a Filter entry is chosen."""
+		if getattr(self, "filtered_label", None) is not None and self._chosen_filter() is not None:
+			return self.filtered_label(item)
+		return self.label_fn(item) if label is None else label
+
 	def apply_filter(self):
 		words = self.filter.GetValue().lower().split()
+		test = self._chosen_filter()
 		pairs = [
-			(item, label) for item, label in zip(self.items, self._labels)
-			if all(word in label.lower() for word in words)
+			(item, self.line(item, label)) for item, label in zip(self.items, self._labels)
+			if all(word in label.lower() for word in words) and (test is None or test(item))
 		]
 		self.shown = [p[0] for p in pairs]
 		self._shown_labels = [p[1] for p in pairs]
@@ -1499,7 +1560,7 @@ class PagedListDialog(AccessibleDialog):
 		self._request += 1
 		request = self._request
 		item = self.selected()
-		self._keep = self.label_fn(item) if item is not None else None
+		self._keep = self.line(item) if item is not None else None
 		ui.message(_("Loading..."))
 		selections = self.selections()
 		state = {"shown": False, "count": 0, "batches": 0}
@@ -1519,6 +1580,8 @@ class PagedListDialog(AccessibleDialog):
 				state["shown"] = True
 				self.items, self._labels = list(items), labels
 				self.filter.ChangeValue("")
+				if not self._filter_entries:
+					self.update_filter_choices()  # a reload keeps the old entries until every page is in
 				self.apply_filter()
 				if self.items:
 					if not keep_focus:
@@ -1530,7 +1593,7 @@ class PagedListDialog(AccessibleDialog):
 			else:
 				self.items.extend(items)
 				self._labels.extend(labels)
-				if self.filter.GetValue().split():
+				if self._filtering():
 					self._refilter()
 				elif labels:
 					self.shown.extend(items)
@@ -1551,6 +1614,8 @@ class PagedListDialog(AccessibleDialog):
 			if not state["shown"]:
 				add_page([], False)
 			self.items = self._without_forgotten(self.items)  # also forgets entries GitHub stopped listing
+			if self.update_filter_choices():
+				self._refilter()  # the chosen kind is no longer in the list: show everything
 			if not self.items:
 				ui.message(self.empty)
 				return
@@ -1578,7 +1643,7 @@ class PagedListDialog(AccessibleDialog):
 	def _refilter(self):
 		"""Apply the filter again after more items arrived, keeping the selected item selected."""
 		item = self.selected()
-		self._keep = self.label_fn(item) if item is not None else None
+		self._keep = self.line(item) if item is not None else None
 		focus = self.listbox.HasFocus()
 		self.apply_filter()
 		if focus:
@@ -1605,18 +1670,21 @@ class PagedListDialog(AccessibleDialog):
 		self._labels[i] = label
 		j = self._position(self.shown, item)
 		if j >= 0:
-			self._shown_labels[j] = label
-			self.listbox.SetString(j, label)
+			self._shown_labels[j] = self.line(item, label)
+			self.listbox.SetString(j, self._shown_labels[j])
 		self.refresh_actions()
 
-	def remove_item(self, item):
-		"""Take an item out of the list without reloading it. The selection moves to the next item, which is
-		returned (None when the list is now empty)."""
+	def remove_item(self, item, select_first=False):
+		"""Take an item out of the list without reloading it. The selection moves to the next item, or to the
+		first item with select_first; the selected item is returned (None when the list is now empty)."""
 		self.forget(item)  # GitHub can list it again for a few seconds; a refresh then still hides it
 		i = self._position(self.items, item)
 		if i >= 0:
 			del self.items[i]
 			del self._labels[i]
+		if self.update_filter_choices():
+			self._refilter()  # that was the last one of the chosen kind: everything is shown again
+			return self.selected()
 		j = self._position(self.shown, item)
 		if j < 0:
 			return self.selected()
@@ -1627,7 +1695,7 @@ class PagedListDialog(AccessibleDialog):
 		if not self.shown:
 			self._after_selection()
 			return None
-		self.listbox.SetSelection(min(j, len(self.shown) - 1))
+		self.listbox.SetSelection(0 if select_first else min(j, len(self.shown) - 1))
 		self._after_selection()
 		return self.selected()
 
@@ -1645,6 +1713,18 @@ class PagedListDialog(AccessibleDialog):
 
 	def reload(self):
 		self.load()
+
+
+def filter_entries(filter_choices, items):
+	"""The entries of a Filter drop-down: [(key, text, test)] from filter_choices(items), each text followed by
+	how many items it matches. Entries matching nothing are left out, except the first (All)."""
+	entries = []
+	for n, (key, text, test) in enumerate(filter_choices(items)):
+		count = sum(1 for item in items if test(item))
+		if count or n == 0:
+			# Translators: an entry in a Filter drop-down, such as "Type: issue (12)".
+			entries.append((key, _("{label} ({count})").format(label=text, count=count), test))
+	return entries
 
 
 def local_fetch(items, per_page=None):
@@ -1692,8 +1772,8 @@ def whats_new_text():
 			"finished, with Move Back to Inbox."
 		),
 		_(
-			"- Working through notifications keeps your place: Mark as Read, Mark as Done and Mute change the list at "
-			"once, and after Done or Mute the next notification is read to you. Each line says how long ago, such as "
+			"- Mark as Read, Mark as Done and Mute take the notification out of the list at once and put you on the "
+			"first notification, so the list only holds what still needs you. Each line says how long ago, such as "
 			"\"3 hours ago\". The unread count counts all your notifications, not only the first 50."
 		),
 		_("PULL REQUESTS"),

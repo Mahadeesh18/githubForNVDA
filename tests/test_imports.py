@@ -140,3 +140,68 @@ def test_removing_an_item_selects_the_next_one(addon):
 	assert dlg.listbox.strings == ["0 unread", "2 unread"] and len(dlg.items) == 2
 	assert dlg.remove_item(items[2]) is items[0]  # the last one: the one before it is selected
 	assert dlg.remove_item(items[0]) is None and dlg.listbox.strings == []
+
+
+def test_removing_an_item_can_select_the_first_one(addon):
+	core = importlib.import_module("githubForNVDA.core")
+	items = [{"id": n, "unread": True} for n in range(4)]
+	dlg = _list_window(core, items)
+	dlg.listbox.SetSelection(2)
+	first = dlg.remove_item(items[2], select_first=True)
+	assert first is items[0] and dlg.listbox.selection == 0
+	assert dlg.listbox.strings == ["0 unread", "1 unread", "3 unread"]
+
+
+def test_notification_filter_separates_pull_requests_and_issues(addon):
+	core = importlib.import_module("githubForNVDA.core")
+	notify = importlib.import_module("githubForNVDA.notify")
+	items = [{"subject": {"type": t}} for t in ("Issue", "PullRequest", "Issue", "CheckSuite", "WorkflowRun")]
+	entries = core.filter_entries(notify.notification_filters, items)
+	assert [text for _key, text, _test in entries] == [
+		"All notifications (5)", "Pull requests (1)", "Issues (2)", "Workflow runs (2)",
+	]
+	assert [entries[2][2](n) for n in items] == [True, False, True, False, False]
+	assert [text for _key, text, _test in core.filter_entries(notify.notification_filters, [])] == ["All notifications (0)"]
+
+
+def test_notification_line_starts_with_what_matters(addon):
+	notify = importlib.import_module("githubForNVDA.notify")
+	n = {
+		"unread": True, "reason": "mention", "subject": {"title": "Fix it", "type": "PullRequest"},
+		"repository": {"full_name": "a/b"},
+	}
+	line = notify.notification_label(n)
+	assert line.startswith("unread, Fix it, pull request, you were mentioned, ") and line.endswith(", a/b")
+	short = notify.notification_label(n, kind=False)
+	assert short.startswith("unread, Fix it, you were mentioned, ") and "pull request" not in short
+
+
+class _Choice:
+	def __init__(self):
+		self.strings, self.selection, self.sets = [], -1, 0
+
+	def Set(self, strings):
+		self.strings, self.sets = list(strings), self.sets + 1
+
+	def SetSelection(self, index):
+		self.selection = index
+
+	def GetSelection(self):
+		return self.selection
+
+
+def test_filter_drop_down_changes_only_when_it_must(addon):
+	core = importlib.import_module("githubForNVDA.core")
+	notify = importlib.import_module("githubForNVDA.notify")
+	items = [{"id": n, "unread": True, "subject": {"type": t}} for n, t in enumerate(("Issue", "PullRequest", "Issue"))]
+	dlg = _list_window(core, items)
+	dlg.filter_choices, dlg.filtered_label, dlg._filter_entries = notify.notification_filters, None, []
+	dlg.filter_choice = _Choice()
+	dlg.update_filter_choices()
+	assert dlg.filter_choice.strings == ["All notifications (3)", "Pull requests (1)", "Issues (2)"]
+	dlg.update_filter_choices()
+	assert dlg.filter_choice.sets == 1  # nothing changed, so the drop-down was left alone
+	dlg.filter_choice.SetSelection(1)  # Pull requests
+	assert dlg.update_filter_choices() is False
+	del dlg.items[1], dlg._labels[1]
+	assert dlg.update_filter_choices() is True and dlg.filter_choice.selection == 0

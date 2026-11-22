@@ -164,20 +164,55 @@ class DoneStore:
 done_store = DoneStore()
 
 
-def notification_label(n):
+def notification_label(n, kind=True):
+	"""One notification as the list reads it, what matters first: unread or not, then the title, then why you
+	got it, how long ago and the repository. kind=False leaves out the kind (pull request, issue...), for a
+	list already filtered to one kind."""
 	subject = n.get("subject") or {}
 	if n.get("_done"):
 		state = _("done")
 	else:
 		state = _("unread") if n.get("unread") else _("read")
-	# Translators: one notification in a list. {type} is issue, pull request..., {reason} why you got it
-	# (such as "you were mentioned"), {state} is read, unread or done, {date} says how long ago, such as
-	# "3 hours ago" (or a date for anything older than a week).
-	return _("{repo}: {title}, {type}, {reason}, {state}, {date}").format(
-		repo=(n.get("repository") or {}).get("full_name", ""), title=subject.get("title", ""),
-		type=subject_type_label(subject.get("type")), reason=reasons().get(n.get("reason"), n.get("reason", "")),
-		state=state, date=relative_time(n.get("updated_at")),
+	values = dict(
+		state=state, title=subject.get("title", ""), type=subject_type_label(subject.get("type")),
+		reason=reasons().get(n.get("reason"), n.get("reason", "")), date=relative_time(n.get("updated_at")),
+		repo=(n.get("repository") or {}).get("full_name", ""),
 	)
+	if not kind:
+		# Translators: one notification in a list showing only one kind (only pull requests, say). {state} is
+		# read, unread or done, {reason} why you got it (such as "you were mentioned"), {date} says how long
+		# ago, such as "3 hours ago" (or a date for anything older than a week).
+		return _("{state}, {title}, {reason}, {date}, {repo}").format(**values)
+	# Translators: one notification in a list. {state} is read, unread or done, {type} is issue, pull
+	# request..., {reason} why you got it (such as "you were mentioned"), {date} says how long ago, such as
+	# "3 hours ago" (or a date for anything older than a week).
+	return _("{state}, {title}, {type}, {reason}, {date}, {repo}").format(**values)
+
+
+def notification_kinds():
+	"""What notifications are about, as the Filter drop-down names them: GitHub's subject type -> plural name."""
+	return {
+		"PullRequest": _("Pull requests"), "Issue": _("Issues"), "Discussion": _("Discussions"),
+		"Release": _("Releases"), "Commit": _("Commits"), "CheckSuite": _("Workflow runs"),
+		"WorkflowRun": _("Workflow runs"), "RepositoryVulnerabilityAlert": _("Security alerts"),
+		"RepositoryDependabotAlertsThread": _("Dependabot alerts"), "RepositoryInvitation": _("Repository invitations"),
+	}
+
+
+def notification_filters(items):
+	"""The Filter drop-down of the Notifications window: everything, then one entry for each kind found among
+	the loaded notifications (pull requests, issues...), so they can be read apart. [(key, text, test)]"""
+	names = notification_kinds()
+
+	def kind_of(n):
+		kind = (n.get("subject") or {}).get("type") or ""
+		return names.get(kind, kind)
+
+	entries = [("all", _("All notifications"), lambda n: True)]
+	order = list(dict.fromkeys(names.values()))  # pull requests and issues first
+	kinds = sorted({kind_of(n) for n in items} - {""}, key=lambda k: (order.index(k) if k in order else len(order), k))
+	entries += [(kind, kind, lambda n, k=kind: kind_of(n) == k) for kind in kinds]
+	return entries
 
 
 def subject_number(url):
@@ -237,6 +272,26 @@ def announce_unread():
 	run_async(count_unread, done)
 
 
+def leave_list(dlg, n, message):
+	"""Take a notification out of the list, put the focus on the first notification and say what happened.
+
+	The notifications you still need to deal with stay together at the top: each one you mark read or done is
+	gone, and you start again from the top."""
+	announce_first(dlg, dlg.remove_item(n, select_first=True), message)
+
+
+def announce_first(dlg, first, message):
+	"""Say what happened and where the focus is now: on the first notification, or the list is empty."""
+	if first is None:
+		ui.message(message + " " + dlg.empty)
+		return
+	if dlg.listbox.HasFocus():
+		ui.message(message + " " + dlg.line(first))  # the selection moved; NVDA would not say it
+	else:
+		ui.message(message)
+		dlg.listbox.SetFocus()  # NVDA reads the first notification
+
+
 def open_notification(dialog, n):
 	"""Open the thing a notification is about."""
 	subject = n.get("subject") or {}
@@ -246,7 +301,7 @@ def open_notification(dialog, n):
 		show_conversation(dialog, full, number, subject.get("type") == "PullRequest", n.get("id"))
 		if get_pref("markReadOnView") and n.get("unread") and not n.get("_done"):
 			n["unread"] = False
-			dialog.update_item(n)
+			leave_list(dialog, n, _("Marked as read."))
 	elif subject.get("type") == "Commit" and full and subject.get("url"):
 		from .repos import show_commit
 		show_commit(dialog, full, subject["url"].rsplit("/", 1)[-1])
@@ -278,14 +333,13 @@ def show_notifications(parent):
 			return
 
 		if not n.get("unread"):
-			ui.message(_("Already read."))
+			leave_list(dlg, n, _("Already read."))
 			return
 
 		def done(res):
 			if res.ok:
 				n["unread"] = False
-				dlg.update_item(n)
-				ui.message(_("Marked as read."))
+				leave_list(dlg, n, _("Marked as read."))
 			else:
 				ui.message(_("Could not mark as read.") + " " + res.message)
 
@@ -295,14 +349,6 @@ def show_notifications(parent):
 		if n is not None and n.get("_done"):
 			return _("Move Back to &Inbox")
 		return _("Mark as &Done")
-
-	def leave_list(dlg, n, message):
-		"""Take the notification out of the list and say where the selection is now."""
-		following = dlg.remove_item(n)
-		if following is None:
-			ui.message(message + " " + dlg.empty)
-		else:
-			ui.message(message + " " + notification_label(following))
 
 	def toggle_done(dlg, n):
 		if n.get("_done"):
@@ -343,11 +389,11 @@ def show_notifications(parent):
 
 		def done(res):
 			if res.ok:
-				for item in dlg.items:
-					if item.get("unread"):
-						item["unread"] = False
-						dlg.update_item(item)
-				ui.message(_("All notifications marked as read."))
+				marked = [item for item in dlg.items if item.get("unread")]
+				for item in marked:
+					item["unread"] = False
+					dlg.remove_item(item, select_first=True)
+				announce_first(dlg, dlg.selected(), _("All notifications marked as read."))
 			else:
 				ui.message(_("Could not mark all as read.") + " " + res.message)
 
@@ -365,6 +411,7 @@ def show_notifications(parent):
 	show_modal(PagedListDialog(
 		parent, _("Notifications"), fetch, notification_label, actions, empty=_("No notifications."),
 		choices=[(_("&Show:"), [_("Unread only"), _("All, except done"), _("Unread, involving me directly"), _("Done")])],
+		filter_choices=notification_filters, filtered_label=lambda n: notification_label(n, kind=False),
 	))
 
 
