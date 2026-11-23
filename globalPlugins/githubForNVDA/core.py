@@ -1786,6 +1786,36 @@ def whats_new_text():
 			"first notification, so the list only holds what still needs you. Each line says how long ago, such as "
 			"\"3 hours ago\". The unread count counts all your notifications, not only the first 50."
 		),
+		_(
+			"- A Filter drop-down shows only one kind of notification: a reason (such as review requested), a type "
+			"(such as pull requests) or a repository, each with how many there are. Each line starts with what "
+			"matters most: unread or read, then the title."
+		),
+		_("GITHUB ACCOUNT SETTINGS"),
+		_(
+			"- GitHub Settings in the main menu is now called GitHub Account Settings, so it is not mixed up with "
+			"this add-on's settings in NVDA. Its entries are ordered by how often you need them, and Status, Social "
+			"Media Links and Notification Settings on GitHub.com are new."
+		),
+		_(
+			"- Personal Access Token says whose the token is, what it may do, what it lacks and when it expires. "
+			"When your token expires within a week, the add-on says so the first time you open the main menu."
+		),
+		_(
+			"- SSH and GPG keys: Add from File opens your .ssh folder, so you do not have to paste a key. A private "
+			"key is always refused. Your own computer's keys say \"this computer\". Before opening keys, email "
+			"addresses or blocked users, the add-on checks your token has the permission they need and offers a "
+			"new token if not."
+		),
+		_(
+			"- Block and Unblock are in a person's profile window. Codespaces Secrets is gone; GitHub's Codespaces "
+			"page is under More Settings on GitHub.com."
+		),
+		_("FASTER"),
+		_(
+			"- Search and every list show their first results after a second or two and add the rest while you "
+			"read, instead of waiting for everything. A list still loading behind another window keeps quiet."
+		),
 		_("PULL REQUESTS"),
 		_(
 			"- Resolve merge conflicts without the browser: the add-on goes through each conflict and lets you keep "
@@ -1816,10 +1846,15 @@ def whats_new_text():
 		),
 		_("OTHER CHANGES"),
 		_(
-			"- GitHub Status shows every kind of request limit; API Limits in GitHub Settings was the same "
+			"- GitHub Status shows every kind of request limit; API Limits in GitHub Account Settings was the same "
 			"information and is gone. Workflow runs opened from a link offer Re-run and Cancel when you may use "
 			"them. Merging offers only the methods the repository allows. Your profile opens faster: "
 			"achievements are only read when you open them."
+		),
+		_(
+			"- Find in the file viewer selects the right text further down a file. A window you asked for no "
+			"longer pops up after you have already left the window you asked from. Messages say \"1 file\" "
+			"instead of \"1 files\", and translations can now get every plural right."
 		),
 		_(
 			"Thank you for using GitHub for NVDA. Questions and bug reports: Mahadeesh18@gmail.com or "
