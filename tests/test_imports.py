@@ -205,3 +205,15 @@ def test_filter_drop_down_changes_only_when_it_must(addon):
 	assert dlg.update_filter_choices() is False
 	del dlg.items[1], dlg._labels[1]
 	assert dlg.update_filter_choices() is True and dlg.filter_choice.selection == 0
+
+
+def test_loading_is_only_announced_in_the_active_window(addon, monkeypatch):
+	core = importlib.import_module("githubForNVDA.core")
+	said = []
+	monkeypatch.setattr(core.ui, "message", said.append)
+	dlg = _list_window(core, [])
+	dlg.IsActive = lambda: False  # an issue opened from the list is in front of it
+	dlg._say_if_active("All 819 items loaded.")
+	dlg.IsActive = lambda: True
+	dlg._say_if_active("All 820 items loaded.")
+	assert said == ["All 820 items loaded."]

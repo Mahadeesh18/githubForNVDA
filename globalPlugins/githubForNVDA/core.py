@@ -1587,7 +1587,7 @@ class PagedListDialog(AccessibleDialog):
 					if not keep_focus:
 						self.listbox.SetFocus()
 					if more:
-						ui.message(ngettext(
+						self._say_if_active(ngettext(
 							"{count} item so far. Loading more...", "{count} items so far. Loading more...", len(self.items),
 						).format(count=len(self.items)))
 			else:
@@ -1617,7 +1617,7 @@ class PagedListDialog(AccessibleDialog):
 			if self.update_filter_choices():
 				self._refilter()  # the chosen kind is no longer in the list: show everything
 			if not self.items:
-				ui.message(self.empty)
+				self._say_if_active(self.empty)
 				return
 			if (res.headers or {}).get("X-Truncated"):
 				text = ngettext(
@@ -1629,7 +1629,7 @@ class PagedListDialog(AccessibleDialog):
 				text = ngettext("All {count} item loaded.", "All {count} items loaded.", len(self.items)).format(count=len(self.items))
 			else:
 				text = count_text("items", len(self.items))
-			ui.message(text)
+			self._say_if_active(text)
 
 		def work():
 			return fetch_every_page(
@@ -1639,6 +1639,16 @@ class PagedListDialog(AccessibleDialog):
 			)
 
 		self.run(work, done)
+
+	def _say_if_active(self, text):
+		"""Say how loading went, but only while this window is the active one. A list still loading behind
+		another window (an issue opened from it, say) must not talk over that window. Errors are always said."""
+		try:
+			active = self.IsActive()
+		except Exception:
+			active = True
+		if active:
+			ui.message(text)
 
 	def _refilter(self):
 		"""Apply the filter again after more items arrived, keeping the selected item selected."""
