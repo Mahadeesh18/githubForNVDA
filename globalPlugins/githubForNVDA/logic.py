@@ -875,3 +875,93 @@ def count_text(kind, count):
 def uploaded_text(done, total):
 	"""'Uploaded 3 of 4 files.'"""
 	return ngettext("Uploaded {ok} of {total} file.", "Uploaded {ok} of {total} files.", total).format(ok=done, total=total)
+
+
+# ----------------------------------------------------------------------
+# Keys and token permissions, for GitHub Account Settings
+# ----------------------------------------------------------------------
+
+SSH_KEY_TYPES = (
+	"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+	"sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
+)
+
+
+def is_private_key(text):
+	"""True for anything that looks like a private key (SSH, PEM or PGP). Those must never be uploaded."""
+	return "PRIVATE KEY" in (text or "").upper()
+
+
+def parse_ssh_public_key(text):
+	"""(type, key data, comment) of the first SSH public key in text, or None.
+
+	A public key file holds one line such as "ssh-ed25519 AAAAC3Nz... anna@laptop"."""
+	for line in (text or "").splitlines():
+		parts = line.strip().split(None, 2)
+		if len(parts) >= 2 and parts[0] in SSH_KEY_TYPES:
+			return parts[0], parts[1], parts[2].strip() if len(parts) > 2 else ""
+	return None
+
+
+def same_ssh_key(a, b):
+	"""True when two public key texts are the same key (the comment after the key does not count)."""
+	pa, pb = parse_ssh_public_key(a), parse_ssh_public_key(b)
+	return bool(pa and pb and pa[:2] == pb[:2])
+
+
+def is_pgp_public_key(text):
+	return "-----BEGIN PGP PUBLIC KEY BLOCK-----" in (text or "") and not is_private_key(text)
+
+
+# A scope also covers the narrower ones listed here (GitHub's own rules for classic tokens).
+_SCOPE_COVERS = {
+	"admin:public_key": ("write:public_key", "read:public_key"),
+	"write:public_key": ("read:public_key",),
+	"admin:gpg_key": ("write:gpg_key", "read:gpg_key"),
+	"write:gpg_key": ("read:gpg_key",),
+	"admin:ssh_signing_key": ("write:ssh_signing_key", "read:ssh_signing_key"),
+	"write:ssh_signing_key": ("read:ssh_signing_key",),
+	"user": ("read:user", "user:email", "user:follow"),
+	"admin:org": ("write:org", "read:org"),
+	"write:org": ("read:org",),
+	"repo": ("repo:status", "repo_deployment", "public_repo", "repo:invite", "security_events"),
+}
+
+
+def token_scopes(header):
+	"""The set of scopes a classic token has, from the X-OAuth-Scopes header, with the narrower ones they cover.
+
+	None when the header is missing: fine-grained tokens and other kinds report no scopes."""
+	if header is None:
+		return None
+	have = {s.strip() for s in header.split(",") if s.strip()}
+	for scope in list(have):
+		have.update(_SCOPE_COVERS.get(scope, ()))
+	return have
+
+
+def has_scope(header, needed):
+	"""True when the token has the scope `needed` (or one that covers it), or when it cannot be told (None)."""
+	have = token_scopes(header)
+	return True if have is None else needed in have
+
+
+def token_expiry(header):
+	"""The expiry date of a token from GitHub's github-authentication-token-expiration header, as an aware datetime,
+	or None when the token does not expire or the header cannot be read. Example: "2026-12-01 14:00:00 UTC"."""
+	from datetime import timezone
+	text = (header or "").strip()
+	for pattern in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S %z", "%Y-%m-%dT%H:%M:%SZ"):
+		try:
+			moment = datetime.strptime(text, pattern)
+		except ValueError:
+			continue
+		return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+	return None
+
+
+def days_until(moment, now=None):
+	"""Whole days from now until moment (0 when it is today or past)."""
+	from datetime import timezone
+	now = now or datetime.now(timezone.utc)
+	return max(0, (moment - now).days)

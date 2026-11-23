@@ -43,7 +43,7 @@ a { color: #0b4fb3; }
 <li><a href="#settings">Settings</a></li>
 <li><a href="#menu">The main menu</a></li>
 <li><a href="#profile">My Profile</a></li>
-<li><a href="#ghsettings">GitHub Settings</a></li>
+<li><a href="#ghsettings">GitHub Account Settings</a></li>
 <li><a href="#others">Other people's profiles</a></li>
 <li><a href="#explore">Search Public Repositories</a></li>
 <li><a href="#browser">The repository browser</a></li>
@@ -65,8 +65,8 @@ a { color: #0b4fb3; }
 <ul>
 <li><code>delete_repo</code> only if you want to delete repositories.</li>
 <li><code>user:email</code> only if you want to change email visibility.</li>
-<li><code>user</code> only if you want to edit your profile status, company, website or social media links, or use GitHub Settings (profile, blocked users, organization membership).</li>
-<li><code>write:public_key</code>, <code>write:gpg_key</code>, <code>admin:ssh_signing_key</code> and <code>codespace:secrets</code> only if you want to manage SSH keys, GPG keys, SSH signing keys and Codespaces secrets in GitHub Settings.</li>
+<li><code>user</code> only if you want to edit your profile status, company, website or social media links, or use GitHub Account Settings (profile, blocked users, organization membership).</li>
+<li><code>write:public_key</code>, <code>write:gpg_key</code> and <code>admin:ssh_signing_key</code> only if you want to manage SSH keys, GPG keys and SSH signing keys in GitHub Account Settings.</li>
 <li><code>read:org</code> if you want your private organization memberships to appear.</li>
 </ul></li>
 <li>Copy the token. Open NVDA menu, Preferences, Settings, <em>GitHub for NVDA</em> and paste it into <strong>Paste your personal access token</strong>. Press <strong>Test personal access token</strong> to check it with GitHub, then press OK to save it.</li>
@@ -132,8 +132,8 @@ a { color: #0b4fb3; }
 <h2 id="menu">The main menu</h2>
 <h3>Personal access token</h3>
 <p>The token is set in NVDA Settings, <em>GitHub for NVDA</em>, not in this menu. Everything except Search Public Repositories, Open Link or Repository, Bookmarked Repositories and GitHub Status needs a token.</p>
-<h3>GitHub Settings</h3>
-<p>The account settings of github.com, in the order of GitHub's own settings sidebar. See <a href="#ghsettings">GitHub Settings</a>.</p>
+<h3>GitHub Account Settings</h3>
+<p>The settings of your account on github.com (not this add-on's settings, which are in NVDA Settings). See <a href="#ghsettings">GitHub Account Settings</a>.</p>
 <h3>My Work</h3>
 <p>Shows what needs you across all of GitHub: items assigned to you, pull requests waiting for your review, your open pull requests and issues, items that mention you, and what you recently finished.</p>
 <h3>My Repositories</h3>
@@ -185,25 +185,27 @@ a { color: #0b4fb3; }
 </ul>
 <p>Editing the profile needs a token with the <code>user</code> permission. Pinned repositories, the contribution graph and the status use GitHub's GraphQL API and need a token.</p>
 
-<h2 id="ghsettings">GitHub Settings</h2>
-<p>Choose <strong>GitHub Settings</strong> in the main menu. Up and Down arrows move in the list, Enter opens an entry, Escape goes back. Lists have buttons for adding and deleting; each change asks you first when it cannot be undone.</p>
+<h2 id="ghsettings">GitHub Account Settings</h2>
+<p>Choose <strong>GitHub Account Settings</strong> in the main menu. Up and Down arrows move in the list, Enter opens an entry, Escape goes back. Lists have buttons for adding and deleting; each change asks you first when it cannot be undone. The entries you need most come first:</p>
 <ul>
 <li><strong>Public Profile</strong>: name, bio, company, location, website, X (Twitter) username, which verified email is shown publicly, and Available for hire.</li>
-<li><strong>Account Overview and Plan</strong>: your plan, two-factor authentication on or off, disk space, private repository limits.</li>
+<li><strong>Status</strong> and <strong>Social Media Links</strong>: the same as Edit Status and Edit Social Media Links in My Profile.</li>
 <li><strong>Email Addresses</strong>: add and delete addresses, make the primary address public or private.</li>
-<li><strong>SSH Keys</strong>, <strong>SSH Signing Keys</strong> and <strong>GPG Keys</strong>: list, add, copy and delete.</li>
-<li><strong>Organization Memberships</strong>: view an organization's repositories or profile, make your membership public or private, accept an invitation.</li>
+<li><strong>Personal Access Token</strong>: who the token belongs to, its permissions, the permissions some features need that it does not have, and when it expires. Buttons open GitHub's pages to make a new token or manage your tokens. When your token stops working within a week, the add-on says so the first time you open the main menu in an NVDA session.</li>
+<li><strong>SSH Keys</strong>, <strong>SSH Signing Keys</strong> and <strong>GPG Keys</strong>: list, copy and delete keys. <strong>Add from File</strong> opens your <code>.ssh</code> folder: choose the file that ends in <code>.pub</code> (for GPG, an exported public key), and give it a title; the computer's name is suggested. A private key is refused, so it can never be uploaded by mistake. <strong>Add Key by Pasting</strong> is still there. SSH keys that are also in this computer's <code>.ssh</code> folder say <em>this computer</em>, and deleting one asks you more carefully.</li>
+<li><strong>Notification Settings on GitHub.com</strong>: opens GitHub's page for where and how you are notified. GitHub only lets you change these on its website.</li>
 <li><strong>Repository Invitations</strong>: accept, decline or open the repository.</li>
-<li><strong>Blocked Users</strong>: block and unblock people.</li>
-<li><strong>Temporary Interaction Limits</strong>: limit who can interact with your public repositories for 24 hours up to 6 months.</li>
+<li><strong>Organization Memberships</strong>: view an organization's repositories or profile, make your membership public or private, accept an invitation.</li>
 <li><strong>Watched Repositories</strong>: Enter opens a repository in the repository browser. Issues and Pull Requests open its lists directly; Unwatch stops watching it.</li>
-<li><strong>Codespaces Secrets</strong>: see the names and delete them. Adding a secret needs encryption that NVDA does not have, so that opens GitHub.</li>
-<li><strong>More Settings on GitHub.com</strong>: everything GitHub only allows on its website (password, two-factor authentication, sessions, notifications, billing, appearance, developer settings and more). Enter opens the page in your browser.</li>
+<li><strong>Blocked Users</strong>: block and unblock people. You can also block someone with <strong>Block</strong> in their profile window.</li>
+<li><strong>Temporary Interaction Limits</strong>: limit who can interact with your public repositories for 24 hours up to 6 months.</li>
+<li><strong>Account Overview and Plan</strong>: your plan, two-factor authentication on or off, disk space, private repository limits.</li>
+<li><strong>More Settings on GitHub.com</strong>: everything GitHub only allows on its website (password, two-factor authentication, sessions, billing, appearance, Codespaces, developer settings and more). Enter opens the page in your browser.</li>
 </ul>
-<p>If GitHub says permission denied, your token is missing a permission: use <strong>Create new personal access token</strong> in NVDA Settings, <em>GitHub for NVDA</em>, which ticks all of them.</p>
+<p>Before opening keys, email addresses or blocked users, the add-on checks that your token has the permission they need. If it does not, it says which one is missing and offers to open GitHub's page for a new token with every permission the add-on uses. Paste the new token in NVDA Settings, <em>GitHub for NVDA</em>.</p>
 
 <h2 id="others">Other people's profiles</h2>
-<p>Open them from a search, a follower list, an organization or Open Link or Repository. They show the same lines as your own profile (pinned repositories, organizations, achievements and badges, status and social media links) with the same View buttons, plus their X (Twitter) username and whether they are available for hire when set. An email address appears only when the person made it public, otherwise "not public". Organizations show their description and do not have the View buttons. <strong>Follow</strong> or <strong>Unfollow</strong>, <strong>Repositories</strong>, <strong>Starred Repositories</strong> (the repositories that person has starred; the profile text also shows how many), <strong>Followers</strong>, <strong>Following</strong>, <strong>Copy Link</strong> and <strong>Open in Browser</strong> are also there.</p>
+<p>Open them from a search, a follower list, an organization or Open Link or Repository. They show the same lines as your own profile (pinned repositories, organizations, achievements and badges, status and social media links) with the same View buttons, plus their X (Twitter) username and whether they are available for hire when set. An email address appears only when the person made it public, otherwise "not public". Organizations show their description and do not have the View buttons. <strong>Follow</strong> or <strong>Unfollow</strong>, <strong>Repositories</strong>, <strong>Starred Repositories</strong> (the repositories that person has starred; the profile text also shows how many), <strong>Followers</strong>, <strong>Following</strong>, <strong>Copy Link</strong> and <strong>Open in Browser</strong> are also there. <strong>Block</strong> (or <strong>Unblock</strong>) asks you first, then blocks the person: they can no longer follow you, comment on your repositories or mention you. It appears when your token has the <code>user</code> permission.</p>
 
 <h2 id="explore">Search Public Repositories</h2>
 <p>Search repositories, users and organizations, issues and pull requests, or code (code search needs a token). The window is laid out in this order, which is also the Tab order:</p>

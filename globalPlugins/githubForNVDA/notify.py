@@ -711,7 +711,6 @@ def recommended_scopes():
 		"write:public_key": _("SSH keys"),
 		"write:gpg_key": _("GPG keys"),
 		"admin:ssh_signing_key": _("SSH signing keys"),
-		"codespace:secrets": _("Codespaces secrets"),
 	}
 
 
@@ -746,7 +745,7 @@ def require_token(parent=None):
 # GitHub's page for making a classic token, with the permissions this add-on needs already ticked.
 NEW_TOKEN_PAGE = (
 	"https://github.com/settings/tokens/new?description=GitHub%20for%20NVDA"
-	"&scopes=repo,notifications,gist,workflow,user,write:public_key,write:gpg_key,admin:ssh_signing_key,codespace:secrets"
+	"&scopes=repo,notifications,gist,workflow,user,write:public_key,write:gpg_key,admin:ssh_signing_key"
 )
 
 
@@ -1503,7 +1502,7 @@ class MainMenuDialog(AccessibleDialog):
 			(_("My Profile"), needs_token(self, lambda: show_profile(self))),
 			(_("My Work"), needs_token(self, lambda: show_my_work(self))),
 			(_("My Repositories"), needs_token(self, lambda: show_my_repos(self))),
-			(_("GitHub Settings"), needs_token(self, lambda: show_settings_menu(self))),
+			(_("GitHub Account Settings"), needs_token(self, lambda: show_settings_menu(self))),
 			(_("Search Public Repositories"), lambda: show_explore(self)),
 			(_("Open Link or Repository"), self.open_by_name),
 			(_("Notifications"), needs_token(self, lambda: show_notifications(self))),
@@ -1549,4 +1548,7 @@ def open_by_name(parent):
 
 
 def open_main_dialog():
+	if has_token():
+		from .profile import warn_if_token_expiring
+		run_async(warn_if_token_expiring)  # says so, once per session, when the token stops working within a week
 	show_modal(MainMenuDialog(gui.mainFrame))

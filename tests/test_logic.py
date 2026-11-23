@@ -149,3 +149,35 @@ def test_count_text_singular_and_plural():
 	assert logic.count_text("repositories", 1) == "1 repository"
 	assert logic.format_size(1) == "1 byte" and logic.format_size(5) == "5 bytes"
 	assert logic.uploaded_text(1, 1) == "Uploaded 1 of 1 file."
+
+
+def test_ssh_public_keys():
+	key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample anna@laptop\n"
+	assert logic.parse_ssh_public_key(key) == ("ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAIExample", "anna@laptop")
+	assert logic.same_ssh_key(key, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample other comment")
+	assert not logic.same_ssh_key(key, "ssh-ed25519 AAAAdifferent anna@laptop")
+	assert logic.parse_ssh_public_key("not a key") is None
+
+
+def test_private_keys_are_recognized():
+	assert logic.is_private_key("-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbn...")
+	assert logic.is_private_key("-----BEGIN PGP PRIVATE KEY BLOCK-----")
+	assert not logic.is_private_key("ssh-ed25519 AAAA anna@laptop")
+	assert logic.is_pgp_public_key("-----BEGIN PGP PUBLIC KEY BLOCK-----\nmQIN...")
+	assert not logic.is_pgp_public_key("-----BEGIN PGP PRIVATE KEY BLOCK-----")
+
+
+def test_token_scopes():
+	assert logic.has_scope("admin:public_key, repo", "write:public_key")
+	assert logic.has_scope("user", "user:email")
+	assert not logic.has_scope("gist, read:org, repo", "write:public_key")
+	assert logic.has_scope(None, "write:public_key")  # a fine-grained token: cannot tell, so do not block
+
+
+def test_token_expiry():
+	from datetime import datetime, timezone
+	moment = logic.token_expiry("2026-12-01 14:00:00 UTC")
+	assert moment == datetime(2026, 12, 1, 14, 0, tzinfo=timezone.utc)
+	assert logic.token_expiry(None) is None and logic.token_expiry("never") is None
+	assert logic.days_until(moment, datetime(2026, 11, 24, 14, 0, tzinfo=timezone.utc)) == 7
+	assert logic.days_until(moment, datetime(2026, 12, 5, tzinfo=timezone.utc)) == 0
