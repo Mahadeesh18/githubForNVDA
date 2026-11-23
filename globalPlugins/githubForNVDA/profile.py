@@ -6,6 +6,7 @@
 """Profiles: your profile, other users, profile extras and GitHub account settings."""
 
 import addonHandler
+import os
 import re
 import time
 import ui
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from logHandler import log
 
 from .core import (
+	account_type_label,
 	AccessibleDialog,
 	apply_access_keys,
 	ask_form,
@@ -23,10 +25,12 @@ from .core import (
 	current_login,
 	forget_identity,
 	format_datetime,
+	format_month,
 	FormDialog,
 	gh,
 	gh_paged,
 	has_token,
+	inform,
 	items_per_page,
 	last_page,
 	local_fetch,
@@ -34,11 +38,15 @@ from .core import (
 	open_url,
 	PAD,
 	PagedListDialog,
+	Problem,
 	prompt_text,
 	Result,
 	show_modal,
 	TextViewDialog,
+	weekday_name,
 )
+from .logic import count_text as counted
+from .logic import days_until, has_scope, is_pgp_public_key, is_private_key, parse_ssh_public_key, same_ssh_key, token_expiry
 from .repos import (
 	q,
 	toggle_bookmark,
@@ -50,9 +58,6 @@ addonHandler.initTranslation()
 # ----------------------------------------------------------------------
 # profileextras.py: The extra parts of My GitHub Profile: pinned repositories, contribution graph, organizations,
 # ----------------------------------------------------------------------
-
-_WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-
 
 # ----------------------------------------------------------------------
 # GraphQL
@@ -124,7 +129,7 @@ mutation($emoji: String, $message: String, $expires: DateTime, $busy: Boolean) {
 # Loading the summary shown in the profile text
 # ----------------------------------------------------------------------
 
-def load_extras(login, plan_name="", own=True):
+def load_extras(login, own=True):
 	"""Fetch everything the profile text needs. Any part that fails is None (shown as unavailable)."""
 
 	def summary():
@@ -143,12 +148,11 @@ def load_extras(login, plan_name="", own=True):
 			res = gh_paged(f"/users/{q(login)}/social_accounts", max_items=200)
 		return res.data if res.ok and isinstance(res.data, list) else None
 
-	def achievements():
-		return fetch_achievements(login, plan_name)
-
+	# Achievements are not loaded here: GitHub has no API for them, so they are read from the profile web page,
+	# which is slow. That only happens when View Achievements and Badges is chosen.
 	extras = {}
-	jobs = {"summary": summary, "orgs": orgs, "social": social, "achievements": achievements}
-	with ThreadPoolExecutor(max_workers=4) as pool:
+	jobs = {"summary": summary, "orgs": orgs, "social": social}
+	with ThreadPoolExecutor(max_workers=3) as pool:
 		futures = {name: pool.submit(job) for name, job in jobs.items()}
 		for name, future in futures.items():
 			try:
@@ -185,12 +189,10 @@ def extra_rows(extras):
 	summary = extras.get("summary")
 	pinned = ((summary or {}).get("pinnedItems") or {}).get("totalCount") if summary else None
 	orgs = extras.get("orgs")
-	badges = extras.get("achievements")
 	social = extras.get("social")
 	return [
 		(_("Pinned Repositories"), count_text(pinned)),
 		(_("Organizations"), count_text(len(orgs) if orgs is not None else None)),
-		(_("Achievements and Badges"), count_text(len(badges) if badges is not None else None)),
 		(_("Status"), status_text(summary) or _("unavailable")),
 		(_("Social Media Links"), count_text(len(social) if social is not None else None)),
 	]
@@ -241,10 +243,6 @@ def show_pinned(parent, login="", own=True):
 # Contribution graph
 # ----------------------------------------------------------------------
 
-def _plural(count, one, many):
-	return one if count == 1 else many
-
-
 def contribution_text(calendar):
 	"""The contribution graph as plain text: a summary, month totals and one line per week."""
 	weeks = [w.get("contributionDays") or [] for w in calendar.get("weeks") or []]
@@ -258,7 +256,8 @@ def contribution_text(calendar):
 	lines.append(_("Days with contributions: {active} of {total}").format(active=active, total=len(days)))
 	best = max(days, key=lambda d: d["contributionCount"])
 	if best["contributionCount"] > 0:
-		lines.append(_("Busiest day: {date}, {count} contributions").format(date=best["date"], count=best["contributionCount"]))
+		lines.append(_("Busiest day: {date}, {contributions}").format(
+			date=best["date"], contributions=counted("contributions", best["contributionCount"])))
 
 	longest = run = 0
 	for d in days:
@@ -272,19 +271,15 @@ def contribution_text(calendar):
 			continue  # today may not have a contribution yet
 		else:
 			break
-	lines.append(_("Longest streak: {count} days").format(count=longest))
-	lines.append(_("Current streak: {count} days").format(count=current))
+	lines.append(_("Longest streak: {days}").format(days=counted("days", longest)))
+	lines.append(_("Current streak: {days}").format(days=counted("days", current)))
 
 	lines += ["", _("Contributions by month:")]
 	months = {}
 	for d in days:
 		months[d["date"][:7]] = months.get(d["date"][:7], 0) + d["contributionCount"]
 	for key, count in months.items():
-		try:
-			name = datetime.strptime(key, "%Y-%m").strftime("%B %Y")
-		except ValueError:
-			name = key
-		lines.append(f"{name}: {count}")
+		lines.append(f"{format_month(key)}: {count}")
 
 	lines += ["", _("Contributions by week:")]
 	for week in weeks:
@@ -292,9 +287,10 @@ def contribution_text(calendar):
 			continue
 		count = sum(d["contributionCount"] for d in week)
 		detail = ", ".join(
-			f"{_WEEKDAYS[d.get('weekday', 0) % 7]} {d['contributionCount']}" for d in week
+			f"{weekday_name(d.get('weekday', 0))} {d['contributionCount']}" for d in week
 		)
-		lines.append(_("Week of {date}: {count} contributions. {detail}").format(date=week[0]["date"], count=count, detail=detail))
+		lines.append(_("Week of {date}: {contributions}. {detail}").format(
+			date=week[0]["date"], contributions=counted("contributions", count), detail=detail))
 	return "\n".join(lines)
 
 
@@ -510,14 +506,6 @@ def load_achievements(login, plan_name=""):
 	return items, ""
 
 
-def fetch_achievements(login, plan_name=""):
-	"""Achievements and badges as a list of {"name", "kind", "tier"}, or None when they cannot be read.
-
-	GitHub offers no API for these, so the public profile page is read.
-	"""
-	return load_achievements(login, plan_name)[0]
-
-
 def achievement_label(item):
 	parts = [item["name"], item["kind"]]
 	if item.get("tier"):
@@ -525,21 +513,11 @@ def achievement_label(item):
 	return ", ".join(parts)
 
 
-class _Problem(Result):
-	"""A failed result that speaks its own explanation instead of a generic network error."""
-
-	__slots__ = ()
-
-	@property
-	def message(self):
-		return self.data
-
-
 def show_achievements(parent, login, plan_name=""):
 	def fetch(page, selections):
 		items, problem = load_achievements(login, plan_name)
 		if items is None:
-			return _Problem(0, problem, {})
+			return Problem(problem)
 		return local_fetch(items)(page, selections)
 
 	actions = [
@@ -741,7 +719,7 @@ def public_email(p, emails=None):
 def profile_text(p, starred, emails=None, extras=None):
 	plan = ((p.get("plan") or {}).get("name") or _("free")).capitalize()
 	rows = [
-		(_("Username"), p.get("login")), (_("Account type"), p.get("type", "User")),
+		(_("Username"), p.get("login")), (_("Account type"), account_type_label(p.get("type"))),
 		(_("Name"), p.get("name") or _("not set")),
 		(_("Email"), public_email(p, emails) or _("not public (use Edit Email to make it public)")),
 		(_("Bio"), p.get("bio") or _("not set")),
@@ -823,8 +801,7 @@ class ProfileDialog(AccessibleDialog):
 			# Needs the user:email permission; without it the email falls back to what /user reports.
 			emails = gh("GET", "/user/emails")
 			listed = emails.data if emails.ok and isinstance(emails.data, list) else []
-			plan = ((me.data.get("plan") or {}).get("name") or "") if isinstance(me.data, dict) else ""
-			extras = load_extras(me.data.get("login", "") if isinstance(me.data, dict) else "", plan)
+			extras = load_extras(me.data.get("login", "") if isinstance(me.data, dict) else "")
 			return Result(200, (me.data, last_page(stars.headers, fallback), listed, extras), {})
 
 		def done(res):
@@ -968,7 +945,7 @@ def show_profile(parent=None):
 # ----------------------------------------------------------------------
 
 def user_text(u, extras=None, starred=None):
-	kind = u.get("type", "User")
+	kind = account_type_label(u.get("type"))
 	rows = [
 		(_("Username"), u.get("login")),
 		(_("Account type"), kind),
@@ -1098,6 +1075,7 @@ class UserDialog(AccessibleDialog):
 		super().__init__(parent, _("Profile: {name}").format(name=login), (600, 520))
 		self.login, self.user = login, {}
 		self.following = None
+		self.blocked = None  # None: unknown, or not something you can block (yourself, an organization)
 		self.is_me = False
 		self._busy = False
 		self.starred = None
@@ -1119,6 +1097,9 @@ class UserDialog(AccessibleDialog):
 		self.add_button(row, _("F&ollowing"), lambda e: show_user_list(self, self.login, "following", _("{name} is following").format(name=self.login)))
 		self.btn_follow = self.add_button(row, _("Fol&low"), self.on_follow)
 		self.btn_follow.Enable(False)
+		# Block and Unblock are one button, like Follow and Unfollow. It is shown once GitHub has said which applies.
+		self.btn_block = self.add_button(row, _("Bloc&k"), self.on_block)
+		self.btn_block.Hide()
 		self.add_button(row, _("Copy &Link"), lambda e: copy_to_clipboard(self.user.get("html_url", ""), _("Link copied.")))
 		self.add_button(row, _("Open in &Browser"), lambda e: open_url(f"https://github.com/{self.login}"))
 		row.Add(self.close_button(), 0, wx.ALL, 3)
@@ -1132,7 +1113,7 @@ class UserDialog(AccessibleDialog):
 		def work():
 			res = gh("GET", f"/users/{q(self.login)}")
 			if res.ok and res.data.get("type") == "User":
-				self.extras = load_extras(self.login, "", own=False)
+				self.extras = load_extras(self.login, own=False)
 				stars = gh("GET", f"/users/{q(self.login)}/starred", params={"per_page": 1})
 				if stars.ok and isinstance(stars.data, list):
 					self.starred = last_page(stars.headers, len(stars.data))
@@ -1141,6 +1122,9 @@ class UserDialog(AccessibleDialog):
 					if not self.is_me:
 						code = gh("GET", f"/user/following/{q(self.login)}").code
 						self.following = (code == 204) if code in (204, 404) else None
+						# 204: blocked, 404: not blocked; anything else (no user permission) leaves the button hidden.
+						code = gh("GET", f"/user/blocks/{q(self.login)}").code
+						self.blocked = (code == 204) if code in (204, 404) else None
 			return res
 
 		def done(res):
@@ -1158,6 +1142,9 @@ class UserDialog(AccessibleDialog):
 			if self.following is not None:
 				self.btn_follow.Enable(True)
 				self._set_follow_label()
+			if self.blocked is not None:
+				self.btn_block.Show()
+				self._set_block_label()
 			self.text.SetFocus()
 			ui.message(_("Profile loaded"))
 
@@ -1167,6 +1154,40 @@ class UserDialog(AccessibleDialog):
 		"""Rename the Follow button and keep every Alt+letter in the window unique."""
 		self.btn_follow.SetLabel(_("Unfol&low") if self.following else _("Fol&low"))
 		apply_access_keys(self)
+
+	def _set_block_label(self):
+		self.btn_block.SetLabel(_("Unbloc&k") if self.blocked else _("Bloc&k"))
+		apply_access_keys(self)
+		self.Layout()
+
+	def on_block(self, event):
+		if self._busy or self.blocked is None:
+			return
+		if not self.blocked and not confirm(self, _(
+			"Block {name}? They will not be able to follow you, see your activity, comment on your repositories or "
+			"mention you, and you stop following each other. You can unblock them here or in GitHub Account Settings, "
+			"Blocked Users."
+		).format(name=self.login), _("Block User"), warning=True, default_no=True):
+			return
+		self._busy = True
+		was_blocked = self.blocked
+
+		def done(res):
+			self._busy = False
+			if res.ok:
+				self.blocked = not was_blocked
+				if self.blocked:
+					self.following = False
+					self._set_follow_label()
+				self._set_block_label()
+				ui.message(
+					_("{name} is now blocked.").format(name=self.login) if self.blocked
+					else _("{name} is unblocked.").format(name=self.login)
+				)
+			else:
+				ui.message(_("That did not work.") + " " + res.message + _need("user"))
+
+		self.run(lambda: gh("DELETE" if was_blocked else "PUT", f"/user/blocks/{q(self.login)}"), done)
 
 	def on_repos(self, event):
 		from .repos import show_repo_list
@@ -1206,7 +1227,7 @@ def show_user(parent, login):
 
 
 # ----------------------------------------------------------------------
-# accountsettings.py: GitHub Settings: the account settings of github.com, as lists and forms you can use with a screen reader.
+# accountsettings.py: GitHub Account Settings: the account settings of github.com, as lists and forms you can use with a screen reader.
 # ----------------------------------------------------------------------
 
 SETTINGS_URL = "https://github.com/settings"
@@ -1355,7 +1376,7 @@ def show_emails(parent):
 			return
 		target = "private" if e.get("visibility") == "public" else "public"
 		_do(dlg, lambda: gh("PATCH", "/user/email/visibility", body={"visibility": target}),
-			_("Your primary email address is now {state}.").format(state=_(target)),
+			_("Your primary email address is now private.") if target == "private" else _("Your primary email address is now public."),
 			_("Could not change the email visibility."), "user:email")
 
 	actions = [
@@ -1377,7 +1398,7 @@ def show_emails(parent):
 def _key_kinds():
 	return {
 		"ssh": {
-			"title": _("SSH Keys"), "path": "/user/keys", "permission": "write:public_key",
+			"title": _("SSH Keys"), "path": "/user/keys", "permission": "write:public_key", "read": "read:public_key", "is_ssh": True,
 			"label": lambda k: _("{title}, {type}, added {date}").format(
 				title=k.get("title") or _("untitled"), type=(k.get("key") or "").split(" ")[0] or _("key"),
 				date=format_datetime(k.get("created_at"))),
@@ -1387,7 +1408,7 @@ def _key_kinds():
 			"empty": _("You have no SSH keys."),
 		},
 		"signing": {
-			"title": _("SSH Signing Keys"), "path": "/user/ssh_signing_keys", "permission": "admin:ssh_signing_key",
+			"title": _("SSH Signing Keys"), "path": "/user/ssh_signing_keys", "permission": "write:ssh_signing_key", "read": "read:ssh_signing_key", "is_ssh": True,
 			"label": lambda k: _("{title}, {type}, added {date}").format(
 				title=k.get("title") or _("untitled"), type=(k.get("key") or "").split(" ")[0] or _("key"),
 				date=format_datetime(k.get("created_at"))),
@@ -1397,7 +1418,7 @@ def _key_kinds():
 			"empty": _("You have no SSH signing keys."),
 		},
 		"gpg": {
-			"title": _("GPG Keys"), "path": "/user/gpg_keys", "permission": "admin:gpg_key",
+			"title": _("GPG Keys"), "path": "/user/gpg_keys", "permission": "write:gpg_key", "read": "read:gpg_key", "is_ssh": False,
 			"label": lambda k: _("{name}, key ID {id}, {emails}, added {date}").format(
 				name=k.get("name") or _("unnamed"), id=k.get("key_id", ""),
 				emails=", ".join(e.get("email", "") for e in (k.get("emails") or [])) or _("no email"),
@@ -1410,29 +1431,163 @@ def _key_kinds():
 	}
 
 
+def ssh_folder():
+	return os.path.join(os.path.expanduser("~"), ".ssh")
+
+
+def local_public_keys():
+	"""The text of every public key file (*.pub) in your .ssh folder."""
+	keys = []
+	try:
+		names = sorted(os.listdir(ssh_folder()))
+	except OSError:
+		return keys
+	for name in names:
+		if not name.lower().endswith(".pub"):
+			continue
+		try:
+			with open(os.path.join(ssh_folder(), name), encoding="utf-8", errors="replace") as f:
+				keys.append(f.read(20000))
+		except OSError:
+			continue
+	return keys
+
+
+MAX_KEY_FILE_BYTES = 200 * 1024
+
+
+def read_key_file(parent, gpg):
+	"""Let you choose a public key file. Returns its text, or None (cancelled, or not a usable public key).
+
+	A private key is refused, so it can never be uploaded by mistake."""
+	folder = ssh_folder() if not gpg else os.path.expanduser("~")
+	wildcard = (
+		_("GPG public keys (*.asc;*.gpg;*.pub;*.txt)") + "|*.asc;*.gpg;*.pub;*.txt|" if gpg
+		else _("SSH public keys (*.pub)") + "|*.pub|"
+	) + _("All files (*.*)") + "|*.*"
+	dialog = wx.FileDialog(
+		parent, _("Choose your public key file"), defaultDir=folder if os.path.isdir(folder) else "",
+		wildcard=wildcard, style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+	)
+	try:
+		if dialog.ShowModal() != wx.ID_OK:
+			return None
+		path = dialog.GetPath()
+	finally:
+		dialog.Destroy()
+	try:
+		if os.path.getsize(path) > MAX_KEY_FILE_BYTES:
+			inform(parent, _("That file is too large to be a public key."), _("Add Key"))
+			return None
+		with open(path, encoding="utf-8", errors="replace") as f:
+			text = f.read()
+	except OSError as e:
+		inform(parent, _("The file could not be read: {error}").format(error=e), _("Add Key"))
+		return None
+	if is_private_key(text):
+		inform(parent, _(
+			"That is a private key. It must never leave your computer, so it was not added. Choose the public key: "
+			"for SSH it is the file with the same name ending in .pub."
+		), _("Add Key"))
+		return None
+	if gpg and not is_pgp_public_key(text):
+		inform(parent, _("That file does not hold a PGP public key block."), _("Add Key"))
+		return None
+	if not gpg and not parse_ssh_public_key(text):
+		inform(parent, _("That file does not hold an SSH public key (a line starting with ssh-ed25519, ssh-rsa or ecdsa-)."), _("Add Key"))
+		return None
+	return text.strip()
+
+
+def with_permission(parent, scope, then):
+	"""Run then() when the token has `scope`. Otherwise explain which permission is missing and offer to make a
+	token that has it, instead of letting GitHub answer "Not Found". Tokens that do not list their permissions
+	(fine-grained tokens) are let through: GitHub decides."""
+
+	def done(res):
+		header = (res.headers or {}).get("X-OAuth-Scopes") if res.ok else None
+		if not res.ok or has_scope(header, scope):
+			then()
+			return
+		if confirm(parent, _(
+			"This needs the {scope} permission, and your token does not have it, so GitHub would refuse. "
+			"Open GitHub's page to make a new token with every permission GitHub for NVDA uses? Paste the new token "
+			"in NVDA Settings, GitHub for NVDA."
+		).format(scope=scope), _("Permission Needed")):
+			from .notify import NEW_TOKEN_PAGE
+			open_url(NEW_TOKEN_PAGE)
+
+	parent.run(lambda: gh("GET", "/user"), done)
+
+
 def show_keys(parent, kind):
 	cfg = _key_kinds()[kind]
+	with_permission(parent, cfg["read"], lambda: _show_keys(parent, cfg))
+
+
+def _show_keys(parent, cfg):
+	local = local_public_keys() if cfg["is_ssh"] else []
+
+	def label(k):
+		text = cfg["label"](k)
+		if cfg["is_ssh"] and any(same_ssh_key(k.get("key", ""), mine) for mine in local):
+			# Translators: added to a key in the list when the same key is in this computer's .ssh folder.
+			text += ", " + _("this computer")
+		return text
 
 	def fetch(page, selections):
 		return gh("GET", cfg["path"], params=_page_params(page))
+
+	def post(dlg, body):
+		_do(dlg, lambda: gh("POST", cfg["path"], body=body), _("Key added."), _("Could not add the key."), cfg["permission"])
 
 	def add(dlg, _item):
 		values = ask_form(dlg, _("Add to {title}").format(title=cfg["title"]), cfg["fields"], ok_label=_("&Add Key"))
 		if not values:
 			return
-		body = cfg["body"](values)
-		_do(dlg, lambda: gh("POST", cfg["path"], body=body), _("Key added."), _("Could not add the key."), cfg["permission"])
+		if is_private_key(values["key"]):
+			inform(dlg, _("That is a private key. It must never leave your computer, so it was not added. Paste the public key instead."), _("Add Key"))
+			return
+		post(dlg, cfg["body"](values))
+
+	def add_from_file(dlg, _item):
+		text = read_key_file(dlg, gpg=not cfg["is_ssh"])
+		if text is None:
+			return
+		computer = os.environ.get("COMPUTERNAME", "")
+		if cfg["is_ssh"]:
+			comment = parse_ssh_public_key(text)[2]
+			suggested = computer or comment
+			values = ask_form(
+				dlg, _("Add to {title}").format(title=cfg["title"]),
+				[(_("&Title (how you will recognize this key on GitHub):"), "title", False, suggested, True)],
+				ok_label=_("&Add Key"),
+			)
+			if values:
+				post(dlg, {"title": values["title"].strip(), "key": text})
+		else:
+			values = ask_form(
+				dlg, _("Add to {title}").format(title=cfg["title"]),
+				[(_("&Name (optional):"), "name", False, computer)], ok_label=_("&Add Key"),
+			)
+			if values is not None:
+				post(dlg, {"name": values["name"].strip(), "armored_public_key": text})
 
 	def delete(dlg, k):
-		if confirm(dlg, _("Delete this key? Anything that uses it will stop working."), _("Delete Key"), warning=True, default_no=True):
+		question = _("Delete this key? Anything that uses it will stop working.")
+		if cfg["is_ssh"] and any(same_ssh_key(k.get("key", ""), mine) for mine in local):
+			question = _("This is the key of this computer. Delete it? This computer will not be able to use it with GitHub any more.")
+		if confirm(dlg, question, _("Delete Key"), warning=True, default_no=True):
 			_do(dlg, lambda: gh("DELETE", f"{cfg['path']}/{k['id']}"), _("Key deleted."), _("Could not delete the key."), cfg["permission"])
 
 	actions = [
 		(_("&Copy Key"), lambda d, k: copy_to_clipboard(cfg["copy"](k), _("Key copied."))),
-		(_("&Add Key"), add, False),
+		(_("Add from &File..."), add_from_file, False),
+		(_("&Add Key by Pasting..."), add, False),
 		(_("&Delete Key"), delete),
 	]
-	_show_list(parent, cfg["title"], fetch, cfg["label"], actions, cfg["empty"])
+	info = _("Keys that are also in this computer's .ssh folder say \"this computer\".") if cfg["is_ssh"] else ""
+	_show_list(parent, cfg["title"], fetch, label, actions, cfg["empty"], info=info)
 
 
 # ======================================================================
@@ -1512,7 +1667,7 @@ def edit_interaction_limits(parent):
 
 
 # ======================================================================
-# Organizations, invitations, watching, codespaces
+# Organizations, invitations and watching
 # ======================================================================
 
 def show_org_memberships(parent):
@@ -1559,7 +1714,13 @@ def show_org_memberships(parent):
 		if confirm(dlg, _("GitHub only lets you leave an organization on its website. Open the organization's people page now?"), _("Leave Organization")):
 			open_url(f"https://github.com/orgs/{q(org(m))}/people")
 
+	def repos(dlg, m):
+		from .repos import show_repo_list
+		show_repo_list(dlg, _("{name}'s repositories").format(name=org(m)), f"/orgs/{q(org(m))}/repos", {"sort": "updated"})
+
 	actions = [
+		(_("View &Repositories"), repos),
+		(_("View Pro&file"), lambda d, m: show_user(d, org(m))),
 		(_("Make Membership &Public"), make_public),
 		(_("Make Membership Pri&vate"), make_private),
 		(_("Accept &Invitation"), accept),
@@ -1567,6 +1728,12 @@ def show_org_memberships(parent):
 		(_("Open in &Browser"), lambda d, m: open_url(f"https://github.com/{q(org(m))}")),
 	]
 	_show_list(parent, _("Organization Memberships"), fetch, label, actions, _("You are not a member of any organization."))
+
+
+def _open_repo(parent, full_name):
+	from .repos import open_repo
+	if full_name:
+		open_repo(parent, full_name)
 
 
 def show_repo_invitations(parent):
@@ -1583,52 +1750,42 @@ def show_repo_invitations(parent):
 			_("Invitation accepted."), _("Could not accept the invitation."), "repo")),
 		(_("&Decline"), lambda d, i: _do(d, lambda: gh("DELETE", f"/user/repository_invitations/{i['id']}"),
 			_("Invitation declined."), _("Could not decline the invitation."), "repo")),
+		(_("&Open Repository"), lambda d, i: _open_repo(d, (i.get("repository") or {}).get("full_name"))),
 		(_("Open in &Browser"), lambda d, i: open_url((i.get("repository") or {}).get("html_url"))),
 	]
 	_show_list(parent, _("Repository Invitations"), fetch, label, actions, _("You have no repository invitations."))
 
 
 def show_watching(parent):
+	"""Repositories you watch. Enter opens one in the repository browser, like My Repositories."""
+	from .conversation import show_issues, show_pulls
+	from .repos import open_repo, repo_label
+
 	def fetch(page, selections):
 		return gh("GET", "/user/subscriptions", params=_page_params(page))
 
 	def unwatch(dlg, r):
 		if confirm(dlg, _("Stop watching {name}?").format(name=r["full_name"]), _("Unwatch"), default_no=True):
-			_do(dlg, lambda: gh("DELETE", f"/repos/{r['full_name']}/subscription"), _("You no longer watch it."), _("Could not unwatch."), "notifications")
+			def gone():
+				dlg.forget(r)  # GitHub can list it for a few more seconds
+				dlg.reload()
+
+			_do(dlg, lambda: gh("DELETE", f"/repos/{r['full_name']}/subscription"), _("You no longer watch it."),
+				_("Could not unwatch."), "notifications", after=gone)
 
 	actions = [
+		(_("&Open"), lambda d, r: open_repo(d, r["full_name"])),
+		(_("&Issues"), lambda d, r: show_issues(d, r["full_name"])),
+		(_("&Pull Requests"), lambda d, r: show_pulls(d, r["full_name"], default_branch=r.get("default_branch", ""))),
 		(_("Open in &Browser"), lambda d, r: open_url(r.get("html_url"))),
 		(_("&Unwatch"), unwatch),
 	]
-	_show_list(parent, _("Watched Repositories"), fetch, lambda r: r.get("full_name", ""), actions,
+	_show_list(parent, _("Watched Repositories"), fetch, repo_label, actions,
 		_("You are not watching any repository."))
 
 
-def show_codespaces_secrets(parent):
-	def fetch(page, selections):
-		res = gh("GET", "/user/codespaces/secrets", params=_page_params(page))
-		if res.ok and isinstance(res.data, dict):
-			return Result(res.code, res.data.get("secrets", []), res.headers)
-		return res
-
-	def label(s):
-		return _("{name}, updated {date}, for {who}").format(
-			name=s.get("name", ""), date=format_datetime(s.get("updated_at")), who=s.get("visibility", ""))
-
-	def delete(dlg, s):
-		if confirm(dlg, _("Delete the secret {name}?").format(name=s["name"]), _("Delete Secret"), warning=True, default_no=True):
-			_do(dlg, lambda: gh("DELETE", f"/user/codespaces/secrets/{q(s['name'])}"), _("Secret deleted."), _("Could not delete the secret."), "codespace:secrets")
-
-	actions = [
-		(_("&Delete Secret"), delete),
-		(_("&Add or Change Secrets on GitHub"), lambda d, s: open_url(SETTINGS_URL + "/codespaces"), False),
-	]
-	_show_list(parent, _("Codespaces Secrets"), fetch, label, actions, _("You have no Codespaces secrets."),
-		_("Secret values are never shown. Adding a secret needs encryption that NVDA does not have, so use Add or Change Secrets on GitHub."))
-
-
 # ======================================================================
-# Account overview and API limits
+# Account overview
 # ======================================================================
 
 def show_account_overview(parent):
@@ -1643,7 +1800,7 @@ def show_account_overview(parent):
 		two = p.get("two_factor_authentication")
 		rows = [
 			(_("Username"), p.get("login")),
-			(_("Account type"), p.get("type", "User")),
+			(_("Account type"), account_type_label(p.get("type"))),
 			(_("GitHub plan"), (plan.get("name") or _("free")).capitalize()),
 			(_("Two-factor authentication"), _("on") if two else _("off") if two is not None else _("unknown")),
 			(_("Disk space used"), _("{size} megabytes").format(size=round((p.get("disk_usage") or 0) / 1024.0, 1))),
@@ -1668,23 +1825,100 @@ def show_account_overview(parent):
 	parent.run(lambda: gh("GET", "/user"), done)
 
 
-def show_rate_limit(parent):
+# ======================================================================
+# The personal access token
+# ======================================================================
+
+TOKEN_EXPIRY_HEADER = "github-authentication-token-expiration"
+
+
+def token_text(user, headers):
+	"""What GitHub says about the token in use: whose it is, what it may do and when it expires."""
+	from .notify import missing_scopes, recommended_scopes
+	scopes_header = (headers or {}).get("X-OAuth-Scopes")
+	lines = [_("Belongs to: {name}").format(name=(user or {}).get("login", _("unknown")))]
+	if scopes_header is None:
+		lines.append(_("Kind: a fine-grained token (or another kind that does not list its permissions). GitHub checks each request against the permissions you chose for it."))
+	else:
+		lines.append(_("Kind: classic token"))
+		names = recommended_scopes()
+		have = [s.strip() for s in scopes_header.split(",") if s.strip()]
+		lines.append(_("Permissions:"))
+		lines += ["- " + (f"{s} ({names[s]})" if s in names else s) for s in have] or ["- " + _("none")]
+		missing = missing_scopes(scopes_header)
+		if missing:
+			lines.append(_("Missing permissions that some features need:"))
+			lines += ["- " + m for m in missing]
+	expiry = token_expiry((headers or {}).get(TOKEN_EXPIRY_HEADER))
+	if expiry is None:
+		lines.append(_("Expires: never, or GitHub did not say."))
+	else:
+		days = days_until(expiry)
+		when = format_datetime(expiry.strftime("%Y-%m-%dT%H:%M:%SZ"))
+		lines.append(ngettext("Expires: {when}, in {days} day.", "Expires: {when}, in {days} days.", days).format(when=when, days=days))
+	return "\n".join(lines)
+
+
+def show_token_info(parent):
 	ui.message(_("Loading..."))
 
 	def done(res):
-		if not res.ok or not isinstance(res.data, dict):
-			ui.message(_("Could not read the limits.") + " " + res.message)
+		if not res.ok:
+			ui.message(_("Could not read the token.") + " " + res.message)
 			return
-		lines = [_("How many requests this add-on may still send to GitHub:")]
-		for name, info in sorted((res.data.get("resources") or {}).items()):
-			reset = datetime.fromtimestamp(info.get("reset", 0)).strftime("%I:%M %p") if info.get("reset") else "-"
-			lines.append(_("{name}: {left} of {total} left, resets at {when}").format(
-				name=name, left=info.get("remaining", 0), total=info.get("limit", 0), when=reset))
-		text = "\n".join(lines)
-		show_modal(TextViewDialog(parent, _("API Limits"), text, label=_("&Limits:"),
-			buttons=[(_("Copy &Details"), lambda d: copy_to_clipboard(text, _("Copied.")))]))
+		from .notify import NEW_TOKEN_PAGE
+		text = token_text(res.data, res.headers)
+		show_modal(TextViewDialog(
+			parent, _("Personal Access Token"), text, label=_("&Token:"),
+			buttons=[
+				(_("&Create New Token"), lambda d: open_url(NEW_TOKEN_PAGE)),
+				(_("&Manage Tokens on GitHub"), lambda d: open_url(SETTINGS_URL + "/tokens")),
+				(_("Copy &Details"), lambda d: copy_to_clipboard(text, _("Copied."))),
+			],
+		))
 
-	parent.run(lambda: gh("GET", "/rate_limit"), done)
+	parent.run(lambda: gh("GET", "/user"), done)
+
+
+_expiry_warned = {"done": False}
+TOKEN_WARNING_DAYS = 7
+
+
+def warn_if_token_expiring():
+	"""Once per NVDA session: say so when the token stops working within a week. Blocking; run it off the GUI thread."""
+	if _expiry_warned["done"]:
+		return
+	_expiry_warned["done"] = True
+	res = gh("GET", "/user", retries=0, timeout=15)
+	expiry = token_expiry((res.headers or {}).get(TOKEN_EXPIRY_HEADER)) if res.ok else None
+	if expiry is None:
+		return
+	days = days_until(expiry)
+	if days <= TOKEN_WARNING_DAYS:
+		from .core import say
+		say(ngettext(
+			"Your GitHub token expires in {days} day. Make a new one: GitHub Account Settings, Personal Access Token.",
+			"Your GitHub token expires in {days} days. Make a new one: GitHub Account Settings, Personal Access Token.",
+			days,
+		).format(days=days))
+
+
+# ======================================================================
+# Status and social links, also reachable from My Profile
+# ======================================================================
+
+def edit_status_from_settings(parent):
+	def done(res):
+		edit_status(parent, res.data if res.ok else {}, lambda: None)
+
+	parent.run(lambda: profile_query(_SUMMARY_FIELDS), done)
+
+
+def edit_social_from_settings(parent):
+	def done(res):
+		edit_social_links(parent, res.data if res.ok and isinstance(res.data, list) else None, lambda: None)
+
+	parent.run(lambda: gh_paged("/user/social_accounts", max_items=200), done)
 
 
 # ======================================================================
@@ -1748,24 +1982,26 @@ def show_website_pages(parent):
 
 class SettingsMenuDialog(AccessibleDialog):
 	def __init__(self, parent):
-		super().__init__(parent, _("GitHub Settings"), (520, 560), resizable=False)
+		super().__init__(parent, _("GitHub Account Settings"), (520, 600), resizable=False)
 		sizer = wx.BoxSizer(wx.VERTICAL)
 		sizer.Add(wx.StaticText(self, label=_("&Settings:")), 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
 		p = self
 		self.entries = [
 			(_("Public Profile"), lambda: edit_public_profile(p)),
-			(_("Account Overview and Plan"), lambda: show_account_overview(p)),
-			(_("Email Addresses"), lambda: show_emails(p)),
+			(_("Status"), lambda: edit_status_from_settings(p)),
+			(_("Social Media Links"), lambda: edit_social_from_settings(p)),
+			(_("Email Addresses"), lambda: with_permission(p, "user:email", lambda: show_emails(p))),
+			(_("Personal Access Token"), lambda: show_token_info(p)),
 			(_("SSH Keys"), lambda: show_keys(p, "ssh")),
 			(_("SSH Signing Keys"), lambda: show_keys(p, "signing")),
 			(_("GPG Keys"), lambda: show_keys(p, "gpg")),
-			(_("Organization Memberships"), lambda: show_org_memberships(p)),
+			(_("Notification Settings on GitHub.com"), lambda: open_url(SETTINGS_URL + "/notifications")),
 			(_("Repository Invitations"), lambda: show_repo_invitations(p)),
-			(_("Blocked Users"), lambda: show_blocked_users(p)),
-			(_("Temporary Interaction Limits"), lambda: edit_interaction_limits(p)),
+			(_("Organization Memberships"), lambda: show_org_memberships(p)),
 			(_("Watched Repositories"), lambda: show_watching(p)),
-			(_("Codespaces Secrets"), lambda: show_codespaces_secrets(p)),
-			(_("API Limits"), lambda: show_rate_limit(p)),
+			(_("Blocked Users"), lambda: with_permission(p, "user", lambda: show_blocked_users(p))),
+			(_("Temporary Interaction Limits"), lambda: edit_interaction_limits(p)),
+			(_("Account Overview and Plan"), lambda: show_account_overview(p)),
 			(_("More Settings on GitHub.com"), lambda: show_website_pages(p)),
 		]
 		self.listbox = wx.ListBox(self, choices=[label for label, _action in self.entries], size=(480, 380))

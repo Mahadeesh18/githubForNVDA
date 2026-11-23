@@ -3,19 +3,19 @@
 # This file is covered by the GNU General Public License, version 2.
 # See the file LICENSE for more details.
 
-"""Pure helper functions: no network, no GUI. Everything here can be unit tested outside NVDA."""
+"""Shared plumbing: token storage, settings, the GitHub API client, background work and the accessible dialogs.
+
+The pure helpers live in logic.py; they are imported here so the other modules can keep importing from core."""
 
 import addonHandler
 import api
 import base64
-import codecs
 import config
 import ctypes
 import globalVars
 import gui
 import os
 import queueHandler
-import re
 import requests
 import threading
 import time
@@ -25,440 +25,66 @@ import webbrowser
 import wx
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from logHandler import log
 
+from .logic import (  # noqa: F401 - re-exported for the other modules
+	account_type_label,
+	build_label,
+	checks_summary,
+	clean_branch_name,
+	count_text,
+	decode_text,
+	Decoded,
+	encode_text,
+	error_text,
+	escape_label,
+	format_date,
+	format_datetime,
+	format_size,
+	GitHubRef,
+	has_next_page,
+	is_done,
+	join_chunks,
+	last_page,
+	line_count,
+	merge_text,
+	month_name,
+	open_state_label,
+	format_month,
+	format_time,
+	fork_status_text,
+	normalize_newlines,
+	numbered_patch,
+	parse_github_link,
+	parse_label,
+	parse_link_header,
+	parse_repo_reference,
+	relative_time,
+	prune_done,
+	repo_from_api_url,
+	resolve_access_keys,
+	review_state_label,
+	RESERVED_OWNERS,
+	safe_filename,
+	split_names,
+	subject_type_label,
+	three_way_trees,
+	strip_mnemonic,
+	tail,
+	TextPositions,
+	truncate,
+	unique_path,
+	uploaded_text,
+	WATCH_STATES,
+	watch_choice_labels,
+	watch_state,
+	watch_state_label,
+	watch_toggle_target,
+	weekday_name,
+	without_done,
+)
 
 addonHandler.initTranslation()
-
-
-# ----------------------------------------------------------------------
-# logic.py: Pure helper functions: no network, no GUI.
-# ----------------------------------------------------------------------
-
-# ----------------------------------------------------------------------
-# Formatting
-# ----------------------------------------------------------------------
-
-def format_size(num):
-	"""Return a human readable size such as '1.5 MB'."""
-	try:
-		value = float(num or 0)
-	except (TypeError, ValueError):
-		value = 0.0
-	if value < 1024:
-		count = int(value)
-		return _("1 byte") if count == 1 else _("{count} bytes").format(count=count)
-	for unit in ("KB", "MB", "GB"):
-		value /= 1024
-		if value < 1024 or unit == "GB":
-			return f"{value:.1f} {unit}"
-	return f"{value:.1f} GB"  # pragma: no cover - loop always returns
-
-
-def format_date(iso_str):
-	"""'2026-10-09T10:20:30Z' -> '2026-10-09'. Empty input gives 'unknown'."""
-	return (iso_str or "")[:10] or _("unknown")
-
-
-def format_datetime(iso_str):
-	"""Return a long date such as '09 October 2026 at 10:20 AM' (UTC)."""
-	if not iso_str:
-		return _("unknown")
-	try:
-		moment = datetime.strptime(iso_str, "%Y-%m-%dT%H:%M:%SZ")
-	except ValueError:
-		return str(iso_str)
-	return moment.strftime("%d %B %Y at %I:%M %p")
-
-
-def truncate(text, limit, note=""):
-	"""Cut text to `limit` characters and append `note` when shortened."""
-	text = text or ""
-	if len(text) <= limit:
-		return text
-	return text[:limit] + note
-
-
-def tail(text, limit, note=""):
-	"""Keep the last `limit` characters (useful for build logs)."""
-	text = text or ""
-	if len(text) <= limit:
-		return text
-	return note + text[-limit:]
-
-
-# ----------------------------------------------------------------------
-# File names
-# ----------------------------------------------------------------------
-
-_RESERVED_NAMES = {
-	"CON", "PRN", "AUX", "NUL",
-	*(f"COM{i}" for i in range(1, 10)),
-	*(f"LPT{i}" for i in range(1, 10)),
-}
-
-
-def safe_filename(name):
-	"""Make a string usable as a Windows file name."""
-	name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name)).strip(" .")
-	if not name:
-		return "download"
-	if name.split(".")[0].upper() in _RESERVED_NAMES:
-		name = "_" + name
-	return name
-
-
-def unique_path(folder, name):
-	"""Return folder/name, adding ' (1)', ' (2)'... if it already exists."""
-	base, ext = os.path.splitext(name)
-	path = os.path.join(folder, name)
-	n = 1
-	while os.path.exists(path):
-		path = os.path.join(folder, f"{base} ({n}){ext}")
-		n += 1
-	return path
-
-
-# ----------------------------------------------------------------------
-# GitHub links
-# ----------------------------------------------------------------------
-
-GitHubRef = namedtuple("GitHubRef", "kind owner repo number rest")
-GitHubRef.__doc__ = """A parsed GitHub address.
-
-kind is one of: repo, user, issue, pull, commit, blob, tree, run.
-number holds the issue/pull/run number or the commit hash.
-rest holds the path segments after blob/tree (branch and file path).
-"""
-GitHubRef.full_name = property(lambda self: f"{self.owner}/{self.repo}" if self.repo else self.owner)
-
-# First path segments on github.com that are not user or organisation names.
-RESERVED_OWNERS = frozenset({
-	"about", "apps", "codespaces", "collections", "contact", "customer-stories", "events", "explore",
-	"features", "issues", "login", "logout", "marketplace", "new", "notifications", "orgs", "pricing",
-	"pulls", "search", "security", "sessions", "settings", "signup", "site", "sponsors", "topics",
-	"trending", "users", "enterprise", "organizations", "readme", "team", "git-guides",
-})
-
-_NAME = r"[A-Za-z0-9_.-]+"
-
-
-def _clean_repo_name(name):
-	return re.sub(r"\.git$", "", name)
-
-
-def parse_github_link(text):
-	"""Understand what a pasted GitHub address or 'owner/repo' points at.
-
-	Returns a GitHubRef or None.
-	"""
-	text = (text or "").strip().strip("<>\"'")
-	if not text:
-		return None
-	ssh = re.fullmatch(rf"git@github\.com:({_NAME})/({_NAME})", text)
-	if ssh:
-		return GitHubRef("repo", ssh.group(1), _clean_repo_name(ssh.group(2)), None, ())
-	web = re.match(r"(?:git\+)?(?:https?://)?(?:www\.)?github\.com/([^?#\s]*)", text, re.IGNORECASE)
-	if web:
-		parts = [p for p in web.group(1).split("/") if p]
-	else:
-		bare = re.fullmatch(rf"({_NAME})/({_NAME})", text)
-		if not bare:
-			return None
-		parts = [bare.group(1), bare.group(2)]
-	if not parts:
-		return None
-	owner = parts[0]
-	if owner.lower() in RESERVED_OWNERS or not re.fullmatch(_NAME, owner):
-		return None
-	if len(parts) == 1:
-		return GitHubRef("user", owner, "", None, ())
-	repo = _clean_repo_name(parts[1])
-	if not repo or repo in (".", ".."):
-		return None
-	section = parts[2].lower() if len(parts) > 2 else ""
-	tail_parts = tuple(parts[3:])
-	if section in ("issues", "pull", "pulls") and tail_parts and tail_parts[0].isdigit():
-		kind = "issue" if section == "issues" else "pull"
-		return GitHubRef(kind, owner, repo, int(tail_parts[0]), ())
-	if section == "commit" and tail_parts:
-		return GitHubRef("commit", owner, repo, tail_parts[0], ())
-	if section in ("blob", "tree") and tail_parts:
-		return GitHubRef(section, owner, repo, None, tail_parts)
-	if section == "actions" and len(tail_parts) >= 2 and tail_parts[0] == "runs" and tail_parts[1].isdigit():
-		return GitHubRef("run", owner, repo, int(tail_parts[1]), ())
-	return GitHubRef("repo", owner, repo, None, ())
-
-
-def parse_repo_reference(text):
-	"""'owner/repo' or any github.com link inside a repository -> 'owner/repo'."""
-	ref = parse_github_link(text)
-	if ref and ref.kind != "user":
-		return ref.full_name
-	return None
-
-
-def repo_from_api_url(url):
-	"""'https://api.github.com/repos/o/r/issues/3' -> 'o/r'."""
-	match = re.search(r"/repos/([^/]+/[^/?#]+)", url or "")
-	return match.group(1) if match else ""
-
-
-# ----------------------------------------------------------------------
-# Paging
-# ----------------------------------------------------------------------
-
-def parse_link_header(header):
-	"""Parse an HTTP Link header into {rel: url}."""
-	links = {}
-	for match in re.finditer(r'<([^>]+)>\s*;\s*rel="([^"]+)"', header or ""):
-		links[match.group(2)] = match.group(1)
-	return links
-
-
-def has_next_page(headers):
-	return "next" in parse_link_header((headers or {}).get("Link", ""))
-
-
-def last_page(headers, fallback=None):
-	"""Number of the last page according to the Link header."""
-	url = parse_link_header((headers or {}).get("Link", "")).get("last")
-	if url:
-		match = re.search(r"[?&]page=(\d+)", url)
-		if match:
-			return int(match.group(1))
-	return fallback
-
-
-# ----------------------------------------------------------------------
-# Errors
-# ----------------------------------------------------------------------
-
-def error_text(code, data=None, headers=None):
-	"""Turn a failed API call into a short sentence that is pleasant to hear."""
-	headers = headers or {}
-	detail = ""
-	if isinstance(data, dict):
-		detail = str(data.get("message") or "")
-		errors = data.get("errors")
-		if isinstance(errors, list) and errors:
-			parts = []
-			for item in errors:
-				if isinstance(item, dict):
-					parts.append(str(item.get("message") or item.get("code") or item))
-				else:
-					parts.append(str(item))
-			detail = (detail + ": " + "; ".join(parts)).strip(": ")
-	elif isinstance(data, str) and code in (0, -1):
-		detail = data
-	if code == 0:
-		return _("Could not reach GitHub. Check your internet connection and try again.")
-	if code == 401:
-		return _("GitHub rejected your token. Set a new token in NVDA Settings under GitHub for NVDA.")
-	if code in (403, 429):
-		retry_after = str(headers.get("Retry-After", "")).strip()
-		exhausted = (
-			str(headers.get("X-RateLimit-Remaining", "")) == "0"
-			or code == 429
-			or "rate limit" in detail.lower()
-		)
-		if exhausted:
-			if retry_after.isdigit():
-				return _("GitHub rate limit reached. Try again in {seconds} seconds.").format(seconds=retry_after)
-			return _("GitHub rate limit reached. Wait a few minutes, or set a token to get a higher limit.")
-		if headers.get("X-GitHub-SSO"):
-			return _(
-				"Your organization requires single sign-on. Open github.com/settings/tokens "
-				"and authorize this token for the organization."
-			)
-		return (_("Permission denied. Your token may be missing a required permission.") + " " + detail).strip()
-	if code == 404:
-		return (_("Not found, or your token cannot access it.") + " " + detail).strip()
-	if code == 409:
-		return (
-			_("Conflict. The item changed on GitHub or is in a state that does not allow this.")
-			+ " " + detail
-		).strip()
-	if code == 410:
-		return _("This feature is turned off for this repository.")
-	if code == 422:
-		return (_("GitHub could not accept that.") + " " + detail).strip()
-	if code in (500, 502, 503, 504):
-		return _("GitHub is having problems right now. Try again in a moment.")
-	return _("GitHub error {code}.").format(code=code) + (" " + detail if detail else "")
-
-
-# ----------------------------------------------------------------------
-# Access keys (Alt+letter)
-# ----------------------------------------------------------------------
-
-def parse_label(label):
-	"""Split a wx label into (plain text, index of the access key or -1).
-
-	'&&' is a literal ampersand and ends up as '&' in the plain text.
-	"""
-	plain = []
-	mark = -1
-	i = 0
-	label = label or ""
-	while i < len(label):
-		char = label[i]
-		if char == "&" and i + 1 < len(label):
-			nxt = label[i + 1]
-			if nxt == "&":
-				plain.append("&")
-				i += 2
-				continue
-			if mark == -1:
-				mark = len(plain)
-			i += 1
-			continue
-		plain.append(char)
-		i += 1
-	return "".join(plain), mark
-
-
-def build_label(plain, mark=-1):
-	"""Inverse of parse_label."""
-	out = []
-	for index, char in enumerate(plain):
-		if char == "&":
-			out.append("&&")
-			continue
-		if index == mark:
-			out.append("&")
-		out.append(char)
-	return "".join(out)
-
-
-def escape_label(text):
-	"""Escape '&' so arbitrary text is not mistaken for an access key."""
-	return str(text).replace("&", "&&")
-
-
-def strip_mnemonic(label):
-	"""Return a label without access key markers, ready to be spoken."""
-	return parse_label(label)[0]
-
-
-def _pick_key(plain, used):
-	candidates = []
-	for index, char in enumerate(plain):
-		if not char.isalnum() or not char.isascii():
-			continue
-		starts_word = index == 0 or not plain[index - 1].isalnum()
-		candidates.append((0 if starts_word else 1, index))
-	for _priority, index in sorted(candidates):
-		key = plain[index].lower()
-		if key not in used:
-			used.add(key)
-			return index
-	return -1
-
-
-def resolve_access_keys(labels, first=()):
-	"""Make the Alt+letter shortcuts in a group of labels unique.
-
-	The first label that asks for a letter keeps it. Later labels that ask for
-	the same letter get another unused letter from their own text, or lose the
-	shortcut if none is left. Labels without a shortcut are left alone.
-	The positions in `first` are served before all the others, so they always keep their letter.
-	"""
-	parsed = [parse_label(label) for label in labels]
-	used = set()
-	chosen = [None] * len(parsed)
-	order = [n for n in first if 0 <= n < len(parsed)]
-	order += [n for n in range(len(parsed)) if n not in order]
-	for n in order:
-		plain, mark = parsed[n]
-		if mark >= 0:
-			key = plain[mark].lower()
-			if key not in used:
-				used.add(key)
-				chosen[n] = mark
-	for n, (plain, mark) in enumerate(parsed):
-		if mark >= 0 and chosen[n] is None:
-			chosen[n] = _pick_key(plain, used)
-	result = []
-	for n, (plain, mark) in enumerate(parsed):
-		if mark < 0:
-			result.append(labels[n])
-		else:
-			result.append(build_label(plain, chosen[n]))
-	return result
-
-
-# ----------------------------------------------------------------------
-# Text files
-# ----------------------------------------------------------------------
-
-Decoded = namedtuple("Decoded", "text encoding crlf editable")
-
-
-def decode_text(data):
-	"""Decode file bytes for display. Returns Decoded or None for binary data."""
-	if not data:
-		return Decoded("", "utf-8", False, True)
-	sample = data[:8192]
-	if b"\x00" in sample:
-		return None
-	controls = sum(1 for b in sample if b < 9 or 13 < b < 32)
-	if controls / len(sample) > 0.1:
-		return None
-	crlf = b"\r\n" in data
-	try:
-		text = data.decode("utf-8")
-		encoding = "utf-8-sig" if data.startswith(codecs.BOM_UTF8) else "utf-8"
-		if encoding == "utf-8-sig":
-			text = text[1:] if text.startswith("﻿") else text
-		return Decoded(text.replace("\r\n", "\n").replace("\r", "\n"), encoding, crlf, True)
-	except UnicodeDecodeError:
-		pass
-	try:
-		text = data.decode("cp1252")
-	except UnicodeDecodeError:
-		return None
-	return Decoded(text.replace("\r\n", "\n").replace("\r", "\n"), "cp1252", crlf, False)
-
-
-def encode_text(text, encoding="utf-8", crlf=False):
-	"""Inverse of decode_text for editable encodings."""
-	text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-	if crlf:
-		text = text.replace("\n", "\r\n")
-	if encoding == "utf-8-sig":
-		return codecs.BOM_UTF8 + text.encode("utf-8")
-	return text.encode(encoding)
-
-
-def normalize_newlines(text):
-	return (text or "").replace("\r\n", "\n").replace("\r", "\n")
-
-
-def split_names(text):
-	"""'a, b ,,c' -> ['a', 'b', 'c'] without duplicates, order kept."""
-	seen = set()
-	names = []
-	for part in re.split(r"[,\n]", text or ""):
-		part = part.strip()
-		if part and part.lower() not in seen:
-			seen.add(part.lower())
-			names.append(part)
-	return names
-
-
-def clean_branch_name(name):
-	"""Make a typed branch name acceptable to git."""
-	name = re.sub(r"\s+", "-", (name or "").strip())
-	name = re.sub(r"[~^:?*\[\\]+", "", name)
-	name = re.sub(r"\.{2,}", ".", name)
-	name = name.strip("/.")
-	return name.removesuffix(".lock")
-
-
-def line_count(text):
-	return (text or "").count("\n") + 1 if text else 0
 
 
 # ----------------------------------------------------------------------
@@ -605,7 +231,6 @@ class TokenStore:
 SECTION = "githubForNVDA"
 
 CONFIG_SPEC = {
-	"itemsPerPage": "integer(min=10, max=100, default=30)",
 	"notificationInterval": "integer(min=0, max=1440, default=0)",
 	"notificationSeconds": "integer(min=0, max=86400, default=0)",
 	"notificationFilter": "integer(min=0, max=1, default=0)",
@@ -622,7 +247,6 @@ CONFIG_SPEC = {
 }
 
 DEFAULTS = {
-	"itemsPerPage": 30,
 	"notificationInterval": 0,
 	"notificationSeconds": 0,
 	"notificationFilter": 0,
@@ -680,17 +304,9 @@ def notification_seconds():
 		return 0
 
 
-_bulk = threading.local()
-
-
 def items_per_page():
 	"""How many items one API request asks for. Lists load every page at once, so they ask for the most GitHub allows."""
-	if getattr(_bulk, "on", False):
-		return 100
-	try:
-		return max(10, min(100, int(get_pref("itemsPerPage"))))
-	except (TypeError, ValueError):
-		return DEFAULTS["itemsPerPage"]
+	return 100
 
 
 def downloads_dir():
@@ -784,6 +400,19 @@ class Result(namedtuple("Result", "code data headers")):
 	@property
 	def has_next(self):
 		return has_next_page(self.headers)
+
+
+class Problem(Result):
+	"""A failed result that speaks its own explanation instead of a generic network error."""
+
+	__slots__ = ()
+
+	def __new__(cls, text):
+		return super().__new__(cls, 0, text, {})
+
+	@property
+	def message(self):
+		return self.data
 
 
 # ----------------------------------------------------------------------
@@ -912,11 +541,15 @@ def gh_paged(url, params=None, max_items=1000, per_page=100, unwrap=None):
 	first = True
 	last = None
 	truncated = False
+	sso = ""
 	while next_url:
 		res = gh("GET", next_url, params=params if first else None)
 		first = False
 		if not res.ok:
 			return res
+		# "partial-results; organizations=...": some organizations hid their items because the token is not
+		# authorized for their single sign-on.
+		sso = sso or (res.headers or {}).get("X-GitHub-SSO", "")
 		if isinstance(res.data, dict):
 			items.extend(res.data.get(unwrap or "items", []))
 		elif isinstance(res.data, list):
@@ -930,6 +563,8 @@ def gh_paged(url, params=None, max_items=1000, per_page=100, unwrap=None):
 	headers = dict(last.headers) if last else {}
 	if truncated:
 		headers["X-Truncated"] = "1"
+	if sso:
+		headers["X-GitHub-SSO"] = sso
 	return Result(200, items[:max_items], headers)
 
 
@@ -1320,6 +955,8 @@ class AccessibleDialog(wx.Dialog):
 			focus.SetFocus()
 
 	def close_button(self, label=None):
+		# Translators: the button that closes a window and goes back to the previous one. Keep the & before
+		# the same letter in every window: apply_access_keys always gives this button its letter first.
 		return wx.Button(self, wx.ID_CANCEL, label or _("&Back"))
 
 	def add_button(self, row, label, handler, flags=wx.ALL, border=3):
@@ -1365,6 +1002,18 @@ class AccessibleDialog(wx.Dialog):
 			item = menu.Append(wx.ID_ANY, label)
 			menu.Bind(wx.EVT_MENU, lambda e, h=entry[1]: wx.CallAfter(h), item)
 		return menu
+
+
+def run_from(window, work, done):
+	"""Run work() off the GUI thread, then done(result) only if `window` is still open.
+
+	Use it when done() opens another window or asks a question: if you closed `window` (pressed Escape while
+	GitHub was answering), nothing pops up afterwards. A window that is not one of the add-on's (NVDA's own
+	frame, say) is never closed, so done() always runs then."""
+	if isinstance(window, AccessibleDialog):
+		window.run(work, done)
+	else:
+		run_async(work, done)
 
 
 # ----------------------------------------------------------------------
@@ -1617,12 +1266,8 @@ def ask_commit_message(parent, default):
 	return prompt_text(parent, _("Commit Message"), _("&Commit message:"), default)
 
 
-def confirm_typed(parent, title, message, word=None):
-	"""Guard for dangerous actions: a clear Yes/No question that starts on No.
-
-	The old version asked the user to type the name ("Type ... to confirm: edit blank"), which was
-	confusing with a screen reader. `word` is kept only so existing callers keep working.
-	"""
+def confirm_danger(parent, title, message):
+	"""Guard for dangerous actions: a clear Yes/No question that starts on No."""
 	text = message.rstrip() + " " + _("Do you want to continue?")
 	return confirm(parent, text, title, warning=True, default_no=True)
 
@@ -1634,31 +1279,37 @@ def confirm_typed(parent, title, message, word=None):
 ALL_ITEMS_LIMIT = 2000
 
 
-def fetch_every_page(fetch, selections, limit=ALL_ITEMS_LIMIT):
+def fetch_every_page(fetch, selections, limit=ALL_ITEMS_LIMIT, on_page=None, keep_going=None):
 	"""Call fetch(page, selections) for page 1, 2, 3 ... and join the results into one list.
 
 	Stops after `limit` items. The returned headers contain "X-Truncated": "1" when the list was cut short,
-	either by the limit or because a later page could not be loaded."""
+	either by the limit or because a later page could not be loaded.
+	on_page(items, more) is called with each page as it arrives (more: another page follows).
+	keep_going() is asked before each further page; when it says False, loading stops early."""
 	items, page, truncated = [], 1, False
-	_bulk.on = True
-	try:
-		while True:
-			res = fetch(page, selections)
-			if not isinstance(res, Result) or not res.ok:
-				if items:
-					truncated = True
-					break
-				return res
-			data = res.data if isinstance(res.data, list) else []
-			items.extend(data)
-			if not data or not res.has_next:
-				break
-			if len(items) >= limit or page >= 200:
+	while True:
+		if page > 1 and keep_going is not None and not keep_going():
+			break
+		res = fetch(page, selections)
+		if not isinstance(res, Result) or not res.ok:
+			if items:
 				truncated = True
 				break
-			page += 1
-	finally:
-		_bulk.on = False
+			return res
+		data = res.data if isinstance(res.data, list) else []
+		room = max(0, limit - len(items))
+		items.extend(data)
+		if on_page is not None:
+			more = res.has_next and len(items) < limit and page < 200
+			on_page(data[:room], more)
+		# A page can be empty after the fetch hid some items (done notifications), so only the
+		# Link header decides whether there is more.
+		if not res.has_next:
+			break
+		if len(items) >= limit or page >= 200:
+			truncated = True
+			break
+		page += 1
 	return Result(200, items[:limit], {"X-Truncated": "1"} if truncated else {})
 
 
@@ -1676,11 +1327,20 @@ class PagedListDialog(AccessibleDialog):
 	         refresh_actions() is called.
 	on_select: optional fn(dialog, item) called when the selected item changes.
 	choices: [(label, [options])] drop-downs; changing one reloads the list.
+	filter_choices: optional fn(items) -> [(key, text, test(item))]. Replaces the filter box with a Filter
+	         drop-down built from the loaded items, each entry with its count; the first entry should match
+	         everything. Choosing one filters at once, without reloading.
+	filtered_label: optional fn(item) -> str, the line read while a Filter entry other than All is chosen
+	         (it can leave out what the filter already says, such as "pull request").
 	"""
 
 	def __init__(self, parent, title, fetch, label, actions, empty=None, choices=None, info="",
-				size=(780, 600), on_select=None, refresh=True, filter_box=True, menu_extra=None):
+				size=(780, 600), on_select=None, refresh=True, filter_box=True, menu_extra=None,
+				filter_choices=None, filtered_label=None):
 		super().__init__(parent, title, size)
+		self.filter_choices = filter_choices
+		self.filtered_label = filtered_label
+		self._filter_entries = []  # (key, text, test) shown in the Filter drop-down
 		self.fetch, self.label_fn, self.actions = fetch, label, actions
 		self.on_select = on_select
 		self.refresh_button = refresh  # False: no Refresh button and no F5 (for lists that never change)
@@ -1713,7 +1373,19 @@ class PagedListDialog(AccessibleDialog):
 		self.filter = wx.TextCtrl(self)
 		self.filter.Bind(wx.EVT_TEXT, self._on_filter_text)
 		filter_row.Add(self.filter, 1, wx.ALL, PAD)
-		if filter_box:
+		self.filter_choice = None
+		if filter_choices is not None:
+			# The drop-down takes the place of the box, which stays (empty and hidden) so the rest of the code works.
+			filter_label.Hide()
+			self.filter.Hide()
+			row = wx.BoxSizer(wx.HORIZONTAL)
+			row.Add(make_label(self, _("Fil&ter:")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, PAD)
+			self.filter_choice = wx.Choice(self)
+			self.filter_choice.Bind(wx.EVT_CHOICE, lambda e: self.apply_filter())
+			row.Add(self.filter_choice, 1, wx.ALL, PAD)
+			sizer.Add(row, 0, wx.EXPAND)
+			sizer.Add(filter_row, 0)
+		elif filter_box:
 			sizer.Add(filter_row, 0, wx.EXPAND)
 		else:
 			# Kept (empty and hidden) so the rest of the code works; it is not on screen and not in the Tab order.
@@ -1756,6 +1428,8 @@ class PagedListDialog(AccessibleDialog):
 			self.run_default()
 		elif code == wx.WXK_F5 and self.refresh_button:
 			self.load()
+		elif code == ord("F") and event.ControlDown() and self.filter_choice is not None:
+			self.filter_choice.SetFocus()
 		elif code == ord("F") and event.ControlDown() and self.filter.IsShown():
 			self.filter.SetFocus()
 		else:
@@ -1820,13 +1494,51 @@ class PagedListDialog(AccessibleDialog):
 
 	def _announce_filter(self):
 		if not self._dead:
-			ui.message(_("{count} matching items").format(count=len(self.shown)))
+			ui.message(ngettext("{count} matching item", "{count} matching items", len(self.shown)).format(count=len(self.shown)))
+
+	def _chosen_filter(self):
+		"""The test of the entry chosen in the Filter drop-down, or None when there is no drop-down or All is chosen."""
+		choice = getattr(self, "filter_choice", None)
+		if choice is None:
+			return None
+		i = choice.GetSelection()
+		return self._filter_entries[i][2] if 0 < i < len(self._filter_entries) else None
+
+	def _filtering(self):
+		return bool(self.filter.GetValue().split()) or self._chosen_filter() is not None
+
+	def update_filter_choices(self):
+		"""Rebuild the Filter drop-down from the items now in the list, keeping the chosen entry when it is
+		still there (All otherwise). Each entry says how many items it matches. The drop-down is only changed
+		when its entries did, so NVDA does not read it again for nothing. True when the chosen entry was lost."""
+		choice = getattr(self, "filter_choice", None)
+		if choice is None:
+			return False
+		i = choice.GetSelection()
+		key = self._filter_entries[i][0] if 0 <= i < len(self._filter_entries) else None
+		entries = filter_entries(self.filter_choices, self.items)
+		keys = [k for k, _text, _test in entries]
+		index = keys.index(key) if key in keys else 0
+		texts = [text for _key, text, _test in entries]
+		if texts != [text for _key, text, _test in self._filter_entries]:
+			choice.Set(texts)
+		self._filter_entries = entries
+		if choice.GetSelection() != index:
+			choice.SetSelection(index)
+		return key is not None and key not in keys
+
+	def line(self, item, label=None):
+		"""The line the list shows for an item: the shorter filtered_label while a Filter entry is chosen."""
+		if getattr(self, "filtered_label", None) is not None and self._chosen_filter() is not None:
+			return self.filtered_label(item)
+		return self.label_fn(item) if label is None else label
 
 	def apply_filter(self):
 		words = self.filter.GetValue().lower().split()
+		test = self._chosen_filter()
 		pairs = [
-			(item, label) for item, label in zip(self.items, self._labels)
-			if all(word in label.lower() for word in words)
+			(item, self.line(item, label)) for item, label in zip(self.items, self._labels)
+			if all(word in label.lower() for word in words) and (test is None or test(item))
 		]
 		self.shown = [p[0] for p in pairs]
 		self._shown_labels = [p[1] for p in pairs]
@@ -1841,37 +1553,111 @@ class PagedListDialog(AccessibleDialog):
 		self._after_selection()
 
 	# --- loading -----------------------------------------------------
-	def load(self, page=None, keep_focus=False):
-		"""(Re)load the whole list: every page is fetched and joined. `page` is ignored; it is kept so older calls still work."""
+	def load(self, keep_focus=False):
+		"""(Re)load the whole list. The first page is shown as soon as it arrives; the following pages are
+		added to the end while you read, without moving the focus. A large list (the issues of a big
+		repository) has up to 20 pages and takes many seconds in all."""
 		self._request += 1
 		request = self._request
 		item = self.selected()
-		self._keep = self.label_fn(item) if item is not None else None
+		self._keep = self.line(item) if item is not None else None
 		ui.message(_("Loading..."))
 		selections = self.selections()
+		state = {"shown": False, "count": 0, "batches": 0}
+
+		def current():
+			return request == self._request and not self._dead
+
+		def add_page(items, more):
+			"""Runs on the GUI thread for every page that arrives."""
+			if not current():
+				return
+			items = self._without_forgotten(items, prune=False)
+			labels = [self.label_fn(i) for i in items]
+			if not state["shown"]:
+				if not items and more:
+					return  # nothing to show yet: wait for the next page
+				state["shown"] = True
+				self.items, self._labels = list(items), labels
+				self.filter.ChangeValue("")
+				if not self._filter_entries:
+					self.update_filter_choices()  # a reload keeps the old entries until every page is in
+				self.apply_filter()
+				if self.items:
+					if not keep_focus:
+						self.listbox.SetFocus()
+					if more:
+						self._say_if_active(ngettext(
+							"{count} item so far. Loading more...", "{count} items so far. Loading more...", len(self.items),
+						).format(count=len(self.items)))
+			else:
+				self.items.extend(items)
+				self._labels.extend(labels)
+				if self._filtering():
+					self._refilter()
+				elif labels:
+					self.shown.extend(items)
+					self._shown_labels.extend(labels)
+					self.listbox.Append(labels)
+			state["batches"] += 1
 
 		def done(res):
-			if request != self._request:
-				return  # a newer request has replaced this one
+			if not current():
+				return  # a newer request has replaced this one, or the window was closed
 			if not isinstance(res, Result) or not res.ok:
-				ui.message(res.message if isinstance(res, Result) else _("Could not load the list."))
+				message = res.message if isinstance(res, Result) else _("Could not load the list.")
+				if state["shown"] and self.items:
+					ui.message(_("Not every item could be loaded.") + " " + message)
+				else:
+					ui.message(message)
 				return
-			self.items = res.data if isinstance(res.data, list) else []
-			self.items = self._without_forgotten(self.items)
-			self._labels = [self.label_fn(i) for i in self.items]
-			self.filter.ChangeValue("")
-			self.apply_filter()
-			if self.items:
-				text = _("{count} items").format(count=len(self.items))
-				if (res.headers or {}).get("X-Truncated"):
-					text += ". " + _("Not every item could be loaded. Open the list in your browser to see the rest.")
-				ui.message(text)
-				if not keep_focus:
-					self.listbox.SetFocus()
+			if not state["shown"]:
+				add_page([], False)
+			self.items = self._without_forgotten(self.items)  # also forgets entries GitHub stopped listing
+			if self.update_filter_choices():
+				self._refilter()  # the chosen kind is no longer in the list: show everything
+			if not self.items:
+				self._say_if_active(self.empty)
+				return
+			if (res.headers or {}).get("X-Truncated"):
+				text = ngettext(
+					"{count} item loaded, the most this list shows. Open the list in your browser to see the rest.",
+					"{count} items loaded, the most this list shows. Open the list in your browser to see the rest.",
+					len(self.items),
+				).format(count=len(self.items))
+			elif state["batches"] > 1:
+				text = ngettext("All {count} item loaded.", "All {count} items loaded.", len(self.items)).format(count=len(self.items))
 			else:
-				ui.message(self.empty)
+				text = count_text("items", len(self.items))
+			self._say_if_active(text)
 
-		self.run(lambda: fetch_every_page(self.fetch, selections), done)
+		def work():
+			return fetch_every_page(
+				self.fetch, selections,
+				on_page=lambda data, more: wx.CallAfter(_deliver, add_page, data, more),
+				keep_going=current,
+			)
+
+		self.run(work, done)
+
+	def _say_if_active(self, text):
+		"""Say how loading went, but only while this window is the active one. A list still loading behind
+		another window (an issue opened from it, say) must not talk over that window. Errors are always said."""
+		try:
+			active = self.IsActive()
+		except Exception:
+			active = True
+		if active:
+			ui.message(text)
+
+	def _refilter(self):
+		"""Apply the filter again after more items arrived, keeping the selected item selected."""
+		item = self.selected()
+		self._keep = self.line(item) if item is not None else None
+		focus = self.listbox.HasFocus()
+		self.apply_filter()
+		if focus:
+			self.listbox.SetFocus()
 
 	def forget(self, item):
 		"""Hide an item that was just deleted or marked done. GitHub can keep listing it for a few seconds."""
@@ -1879,19 +1665,76 @@ class PagedListDialog(AccessibleDialog):
 		if key is not None:
 			self.__dict__.setdefault("_forgotten", {})[key] = time.time()
 
-	def _without_forgotten(self, items):
+	@staticmethod
+	def _position(items, item):
+		"""Where this very item is in a list (by identity: two items can look alike), or -1."""
+		return next((i for i, x in enumerate(items) if x is item), -1)
+
+	def update_item(self, item):
+		"""Read an item's line again after it changed (marked read, say), without reloading the list or
+		moving the selection."""
+		i = self._position(self.items, item)
+		if i < 0:
+			return
+		label = self.label_fn(item)
+		self._labels[i] = label
+		j = self._position(self.shown, item)
+		if j >= 0:
+			self._shown_labels[j] = self.line(item, label)
+			self.listbox.SetString(j, self._shown_labels[j])
+		self.refresh_actions()
+
+	def remove_item(self, item, select_first=False):
+		"""Take an item out of the list without reloading it. The selection moves to the next item, or to the
+		first item with select_first; the selected item is returned (None when the list is now empty)."""
+		self.forget(item)  # GitHub can list it again for a few seconds; a refresh then still hides it
+		i = self._position(self.items, item)
+		if i >= 0:
+			del self.items[i]
+			del self._labels[i]
+		if self.update_filter_choices():
+			self._refilter()  # that was the last one of the chosen kind: everything is shown again
+			return self.selected()
+		j = self._position(self.shown, item)
+		if j < 0:
+			return self.selected()
+		del self.shown[j]
+		del self._shown_labels[j]
+		self.listbox.Delete(j)
+		self._selected_key = None
+		if not self.shown:
+			self._after_selection()
+			return None
+		self.listbox.SetSelection(0 if select_first else min(j, len(self.shown) - 1))
+		self._after_selection()
+		return self.selected()
+
+	def _without_forgotten(self, items, prune=True):
+		"""Hide forgotten items. prune: the list is complete, so forget entries GitHub no longer lists."""
 		forgotten = self.__dict__.get("_forgotten")
 		if not forgotten:
 			return items
 		now = time.time()
 		listed = {i.get("id") for i in items if isinstance(i, dict)}
 		for key in list(forgotten):
-			if key not in listed or now - forgotten[key] > 60:
+			if (prune and key not in listed) or now - forgotten[key] > 60:
 				forgotten.pop(key, None)
 		return [i for i in items if not (isinstance(i, dict) and i.get("id") in forgotten)]
 
 	def reload(self):
 		self.load()
+
+
+def filter_entries(filter_choices, items):
+	"""The entries of a Filter drop-down: [(key, text, test)] from filter_choices(items), each text followed by
+	how many items it matches. Entries matching nothing are left out, except the first (All)."""
+	entries = []
+	for n, (key, text, test) in enumerate(filter_choices(items)):
+		count = sum(1 for item in items if test(item))
+		if count or n == 0:
+			# Translators: an entry in a Filter drop-down, such as "Type: issue (12)".
+			entries.append((key, _("{label} ({count})").format(label=text, count=count), test))
+	return entries
 
 
 def local_fetch(items, per_page=None):
@@ -1916,24 +1759,109 @@ def current_version():
 
 
 def whats_new_text():
-	return _(
-		"""What's new in GitHub for NVDA
-
-This window opens the first time you open GitHub for NVDA after it is installed or updated, and the main menu opens right after you close it. Press Tab to reach the buttons. "Don't show again" hides this window until the next update. OK closes it for now, so it opens again the next time. Either way the main menu opens next. You can read this again whenever you like: use the command "Opens the What's New page" in NVDA menu, Preferences, Input gestures, GitHub for NVDA.
-
-
-REPOSITORY INFORMATION
-
-- The information at the top of the repository window is now one fact per line, with a blank line after the name and the description: Owner/Name, description, visibility, Default branch, Stars, Forks, Open issues and pull requests, Language, License, Topics, Last updated (for example 2026 / 11 / 06) and Your access.
-- "Your access" now shows your real role on the repository: admin, maintain, write, triage or read.
-
-ACCESS
-
-- What you can do now follows your role on the repository, not only whether you own it. With write, maintain or admin access you get More Options (create, upload, rename, delete, branches), editing files and the README, and releases. Maintain and admin also edit the description, website address and topics. Only admin renames, deletes, archives, changes the default branch or the visibility. With read or triage access you can read, star, fork, and open or comment on issues and pull requests; GitHub itself decides what triage may manage.
-
-
-Thank you for using GitHub for NVDA. Questions and bug reports: Mahadeesh18@gmail.com or https://github.com/Mahadeesh18/githubForNVDA"""
-	)
+	"""The What's New page. Each paragraph is its own string, so translators get short pieces to translate."""
+	paragraphs = [
+		_("What's new in GitHub for NVDA"),
+		_(
+			"This window opens the first time you open GitHub for NVDA after it is installed or updated, and the "
+			"main menu opens right after you close it. Press Tab to reach the buttons. \"Don't show again\" hides "
+			"this window until the next update. OK closes it for now, so it opens again the next time. You can read "
+			"this again whenever you like: use the command \"Opens the What's New page\" in NVDA menu, Preferences, "
+			"Input gestures, GitHub for NVDA."
+		),
+		_("NEW COMMANDS"),
+		_(
+			"- New commands you can give a key in Input gestures, GitHub for NVDA: open notifications, check for "
+			"new notifications now, pause or resume the announcements, My Work, My Repositories, search, open a "
+			"link, bookmarks, gists and your profile."
+		),
+		_("NOTIFICATIONS"),
+		_(
+			"- Mark as Done now really takes a notification out of your lists, so what is left is what still needs "
+			"you. It comes back by itself when something new happens in it. \"Show: Done\" lists the ones you "
+			"finished, with Move Back to Inbox."
+		),
+		_(
+			"- Mark as Read, Mark as Done and Mute take the notification out of the list at once and put you on the "
+			"first notification, so the list only holds what still needs you. Each line says how long ago, such as "
+			"\"3 hours ago\". The unread count counts all your notifications, not only the first 50."
+		),
+		_(
+			"- A Filter drop-down shows only one kind of notification: a reason (such as review requested), a type "
+			"(such as pull requests) or a repository, each with how many there are. Each line starts with what "
+			"matters most: unread or read, then the title."
+		),
+		_("GITHUB ACCOUNT SETTINGS"),
+		_(
+			"- GitHub Settings in the main menu is now called GitHub Account Settings, so it is not mixed up with "
+			"this add-on's settings in NVDA. Its entries are ordered by how often you need them, and Status, Social "
+			"Media Links and Notification Settings on GitHub.com are new."
+		),
+		_(
+			"- Personal Access Token says whose the token is, what it may do, what it lacks and when it expires. "
+			"When your token expires within a week, the add-on says so the first time you open the main menu."
+		),
+		_(
+			"- SSH and GPG keys: Add from File opens your .ssh folder, so you do not have to paste a key. A private "
+			"key is always refused. Your own computer's keys say \"this computer\". Before opening keys, email "
+			"addresses or blocked users, the add-on checks your token has the permission they need and offers a "
+			"new token if not."
+		),
+		_(
+			"- Block and Unblock are in a person's profile window. Codespaces Secrets is gone; GitHub's Codespaces "
+			"page is under More Settings on GitHub.com."
+		),
+		_("FASTER"),
+		_(
+			"- Search and every list show their first results after a second or two and add the rest while you "
+			"read, instead of waiting for everything. A list still loading behind another window keeps quiet."
+		),
+		_("PULL REQUESTS"),
+		_(
+			"- Resolve merge conflicts without the browser: the add-on goes through each conflict and lets you keep "
+			"your branch, the base branch, both, or your own edit, then commits the merge. Update Branch brings "
+			"in the latest changes of the base branch."
+		),
+		_(
+			"- Files Changed lists every changed file and reads its changes with line numbers. You can comment "
+			"on a line, reply to comments, edit or delete your own comments, request reviewers, and mark a draft "
+			"ready for review. The pull request window also says how its checks went."
+		),
+		_("REPOSITORIES"),
+		_(
+			"- Watched Repositories open in the repository browser, with their issues and pull requests, instead "
+			"of the browser. Organization Memberships can show an organization's repositories."
+		),
+		_(
+			"- My Repositories explains which repositories GitHub lists there, and says so when an organization's "
+			"single sign-on hides some of them."
+		),
+		_("WATCH, FORK AND SYNC"),
+		_(
+			"- The repository browser has Watch and Unwatch, one button like Star and Unstar (starring does not watch "
+			"a repository; More Options, Watch Settings, has every choice), Fork (choose the owner and name, copy only "
+			"the default branch, or open the "
+			"fork you already have) and, for your own forks, Sync Fork, which brings the branch up to date with the "
+			"original. The repository information says where a fork comes from and how far behind it is."
+		),
+		_("OTHER CHANGES"),
+		_(
+			"- GitHub Status shows every kind of request limit; API Limits in GitHub Account Settings was the same "
+			"information and is gone. Workflow runs opened from a link offer Re-run and Cancel when you may use "
+			"them. Merging offers only the methods the repository allows. Your profile opens faster: "
+			"achievements are only read when you open them."
+		),
+		_(
+			"- Find in the file viewer selects the right text further down a file. A window you asked for no "
+			"longer pops up after you have already left the window you asked from. Messages say \"1 file\" "
+			"instead of \"1 files\", and translations can now get every plural right."
+		),
+		_(
+			"Thank you for using GitHub for NVDA. Questions and bug reports: Mahadeesh18@gmail.com or "
+			"https://github.com/Mahadeesh18/githubForNVDA"
+		),
+	]
+	return "\n\n".join(paragraphs)
 
 
 class WhatsNewDialog(AccessibleDialog):

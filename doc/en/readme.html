@@ -29,7 +29,7 @@ a { color: #0b4fb3; }
 <p>GitHub for NVDA lets you use GitHub with NVDA through ordinary, fully labelled Windows windows. Browse repositories and files, work with issues and pull requests, watch GitHub Actions, read notifications, manage gists and releases, and more, without needing the GitHub website.</p>
 <p>This add-on sets no keyboard shortcut of its own. Give the commands you want a key yourself in NVDA menu, Preferences, Input gestures, <em>GitHub for NVDA</em>. See <a href="#nokey">Commands and their shortcuts</a>.</p>
 <ul>
-<li>Requires NVDA 2024.1 or later (tested up to 2026.2, including 64-bit NVDA)</li>
+<li>Requires NVDA 2026.2 or later (tested up to 2026.3, including 64-bit NVDA)</li>
 <li>Author: Mahadeesh</li>
 <li>License: GPL v2</li>
 </ul>
@@ -43,7 +43,7 @@ a { color: #0b4fb3; }
 <li><a href="#settings">Settings</a></li>
 <li><a href="#menu">The main menu</a></li>
 <li><a href="#profile">My Profile</a></li>
-<li><a href="#ghsettings">GitHub Settings</a></li>
+<li><a href="#ghsettings">GitHub Account Settings</a></li>
 <li><a href="#others">Other people's profiles</a></li>
 <li><a href="#explore">Search Public Repositories</a></li>
 <li><a href="#browser">The repository browser</a></li>
@@ -65,8 +65,8 @@ a { color: #0b4fb3; }
 <ul>
 <li><code>delete_repo</code> only if you want to delete repositories.</li>
 <li><code>user:email</code> only if you want to change email visibility.</li>
-<li><code>user</code> only if you want to edit your profile status, company, website or social media links, or use GitHub Settings (profile, blocked users, organization membership).</li>
-<li><code>write:public_key</code>, <code>write:gpg_key</code>, <code>admin:ssh_signing_key</code> and <code>codespace:secrets</code> only if you want to manage SSH keys, GPG keys, SSH signing keys and Codespaces secrets in GitHub Settings.</li>
+<li><code>user</code> only if you want to edit your profile status, company, website or social media links, or use GitHub Account Settings (profile, blocked users, organization membership).</li>
+<li><code>write:public_key</code>, <code>write:gpg_key</code> and <code>admin:ssh_signing_key</code> only if you want to manage SSH keys, GPG keys and SSH signing keys in GitHub Account Settings.</li>
 <li><code>read:org</code> if you want your private organization memberships to appear.</li>
 </ul></li>
 <li>Copy the token. Open NVDA menu, Preferences, Settings, <em>GitHub for NVDA</em> and paste it into <strong>Paste your personal access token</strong>. Press <strong>Test personal access token</strong> to check it with GitHub, then press OK to save it.</li>
@@ -91,7 +91,7 @@ a { color: #0b4fb3; }
 <tr><td>Lists</td><td><code>Enter</code></td><td>Runs the first action, usually opening the item</td></tr>
 <tr><td>Lists</td><td><code>Applications</code> key</td><td>Opens a menu of every action</td></tr>
 <tr><td>Lists</td><td><code>F5</code></td><td>Refreshes</td></tr>
-<tr><td>Lists with a filter box</td><td><code>Control+F</code></td><td>Jumps to the filter box. Several words must all match.</td></tr>
+<tr><td>Lists with a filter box</td><td><code>Control+F</code></td><td>Jumps to the filter box. Several words must all match. In Notifications it jumps to the Filter drop-down, which keeps pull requests, issues, releases and the rest apart: choose one to see only those, with how many there are of each.</td></tr>
 <tr><td>My Repositories</td><td><code>Delete</code></td><td>Deletes the repository after a Yes/No question (it starts on No)</td></tr>
 <tr><td>Repository browser</td><td><code>Enter</code>, <code>Delete</code>, <code>Backspace</code></td><td>Opens the folder or file, deletes the file (with write access), goes up one folder</td></tr>
 <tr><td>Repository browser</td><td><code>Control+F</code></td><td>Jumps to the Search box</td></tr>
@@ -103,7 +103,17 @@ a { color: #0b4fb3; }
 <p>None of these commands has a key until you give it one. Users choose their own keys in NVDA menu, Preferences, Input gestures, <em>GitHub for NVDA</em>, so the add-on never clashes with other add-ons or with your own keys:</p>
 <ul>
 <li>Open the GitHub for NVDA main menu</li>
+<li>Open your notifications</li>
 <li>Announce how many unread notifications you have</li>
+<li>Check for new notifications now and say what was found</li>
+<li>Pause or resume the spoken announcements of new notifications</li>
+<li>Open My Work</li>
+<li>Open My Repositories</li>
+<li>Open Search Public Repositories</li>
+<li>Open a link or repository (a GitHub link on the clipboard is filled in)</li>
+<li>Open your bookmarked repositories</li>
+<li>Open your gists</li>
+<li>Open your profile</li>
 <li>Open the What's New page</li>
 </ul>
 
@@ -122,11 +132,12 @@ a { color: #0b4fb3; }
 <h2 id="menu">The main menu</h2>
 <h3>Personal access token</h3>
 <p>The token is set in NVDA Settings, <em>GitHub for NVDA</em>, not in this menu. Everything except Search Public Repositories, Open Link or Repository, Bookmarked Repositories and GitHub Status needs a token.</p>
-<h3>GitHub Settings</h3>
-<p>The account settings of github.com, in the order of GitHub's own settings sidebar. See <a href="#ghsettings">GitHub Settings</a>.</p>
+<h3>GitHub Account Settings</h3>
+<p>The settings of your account on github.com (not this add-on's settings, which are in NVDA Settings). See <a href="#ghsettings">GitHub Account Settings</a>.</p>
 <h3>My Work</h3>
 <p>Shows what needs you across all of GitHub: items assigned to you, pull requests waiting for your review, your open pull requests and issues, items that mention you, and what you recently finished.</p>
 <h3>My Repositories</h3>
+<p>The list has the repositories you own, the ones you were added to as a collaborator and the ones of your organizations. GitHub does not list other repositories you can only read, such as a public repository you cloned: find those with Starred Repositories, Watched Repositories, Bookmarks or Open Link or Repository. If an organization uses single sign-on and your token is not authorized for it, its repositories are missing and the add-on says so: open github.com/settings/tokens, choose Configure SSO next to the token and authorize it.</p>
 <p>The Sort by box and the Search box are the first two stops, then the list. You can sort by name, recently updated, private, public, forks or archived, open, create (with an optional licence) and delete. Press <code>Enter</code> on a repository to open it and <code>Delete</code> to delete it (you are asked a Yes/No question first, and it starts on No). The <code>Applications</code> key opens a menu with:</p>
 <ul>
 <li>Open Repository, Rename, Edit Description, Edit Topics, Edit Website Address (with maintain or admin access) and Delete</li>
@@ -139,13 +150,15 @@ a { color: #0b4fb3; }
 <h3>Open Link or Repository</h3>
 <p>Understands <code>owner/repo</code>, a user name, and links to repositories, folders, files, issues, pull requests, commits and workflow runs. If the clipboard holds a GitHub link it is filled in for you.</p>
 <h3>Notifications</h3>
-<p>Unread only, all, or only unread notifications that involve you directly (assigned, mentioned, review requested and so on). Copy Link puts the web address of the notification on the clipboard. View opens issues and pull requests directly and marks them read. Also mark as read, mark as done, mute a thread and mark everything as read.</p>
+<p>Show unread only, all except done, only unread notifications that involve you directly (assigned, mentioned, review requested and so on), or <strong>Done</strong>. Copy Link puts the web address of the notification on the clipboard. View opens issues and pull requests directly and marks them read. Also mark as read, mute a thread and mark everything as read.</p>
+<p><strong>Mark as Done</strong> takes a notification out of your lists, so what is left is what still needs you. GitHub does not tell other programs which notifications are done, so the add-on remembers this on your computer. A done notification comes back by itself when something new happens in it, the same as on the GitHub website. <strong>Show: Done</strong> lists the ones you finished; there the button is <strong>Move Back to Inbox</strong>. Muting a thread also marks it done.</p>
+<p>Each line puts what matters first: unread, read or done, then the title, the kind (pull request, issue...), why you got it, how long ago, and last the repository. While the Filter shows only one kind, the kind is left out, since every line would say the same. How long ago is said as <em>12 minutes ago</em>, <em>yesterday</em> or <em>4 days ago</em>; anything older than a week gives the date. Mark as Read, Mark as Done and Mute take the notification out of the list at once, without loading it again, and put you on the first notification, which is read to you. So what is left in the list is what still needs you, and you always continue from the top. Viewing a notification marks it read (when <em>Mark a notification as read when I open it</em> is ticked), so it leaves the list too when you come back. Mark All as Read takes every unread notification out. Refresh (<code>F5</code>) loads the list again, for example to see read notifications under <em>All, except done</em>. <em>Announce how many unread notifications you have</em> counts all of them, not only the first 50.</p>
 <h3>Gists</h3>
 <p>List, view every file, create (filled from the clipboard, secret unless you tick public), edit single-file gists and delete.</p>
 <h3>Bookmarked Repositories</h3>
 <p>Bookmarks are saved on your computer and follow a repository when you rename it.</p>
 <h3>GitHub Status</h3>
-<p>Shows who you are signed in as and how many requests GitHub still allows.</p>
+<p>Shows who you are signed in as and how many requests GitHub still allows of every kind (general requests, searches, GraphQL and so on).</p>
 
 <h2 id="profile">My Profile</h2>
 <p>The profile text lists your username, name, email (shown as public only when it is), bio, company, location, website, repository and gist counts, followers and following. After Following come five extra lines. Press <code>Tab</code> from the text to reach the matching buttons, in the same order.</p>
@@ -156,7 +169,7 @@ a { color: #0b4fb3; }
 <tr><td>Pinned Repositories: number</td><td>View Pinned Repositories</td><td>Lists them. Open, open in browser, bookmark or copy the link.</td></tr>
 <tr><td>(none)</td><td>View Contribution Graph</td><td>Opens a read-only text page: yearly total, days with contributions, busiest day, longest and current streak, totals by month and one line per week.</td></tr>
 <tr><td>Organizations: number</td><td>View Organizations</td><td>Lists your organizations. View a profile, view its repositories or open it in the browser.</td></tr>
-<tr><td>Achievements and Badges: number</td><td>View Achievements and Badges</td><td>Lists them. GitHub has no API for this, so the list is read from the public profile page (achievements with their level, plus Pro and Developer Program Member badges). If GitHub cannot be read, the reason is spoken, and Open in Browser always shows the full list.</td></tr>
+<tr><td>(none)</td><td>View Achievements and Badges</td><td>Lists them. GitHub has no API for this, so the list is read from the public profile page when you choose this button (not every time the profile opens, which keeps it fast) (achievements with their level, plus Pro and Developer Program Member badges). If GitHub cannot be read, the reason is spoken, and Open in Browser always shows the full list.</td></tr>
 <tr><td>Status: your status</td><td>Edit Status</td><td>Message, emoji, busy checkbox and when to clear it. Leave message and emoji empty to clear your status.</td></tr>
 <tr><td>Social Media Links: number</td><td>View Social Media Links</td><td>Lists your links. Open in browser or copy the link.</td></tr>
 </tbody>
@@ -172,26 +185,27 @@ a { color: #0b4fb3; }
 </ul>
 <p>Editing the profile needs a token with the <code>user</code> permission. Pinned repositories, the contribution graph and the status use GitHub's GraphQL API and need a token.</p>
 
-<h2 id="ghsettings">GitHub Settings</h2>
-<p>Choose <strong>GitHub Settings</strong> in the main menu. Up and Down arrows move in the list, Enter opens an entry, Escape goes back. Lists have buttons for adding and deleting; each change asks you first when it cannot be undone.</p>
+<h2 id="ghsettings">GitHub Account Settings</h2>
+<p>Choose <strong>GitHub Account Settings</strong> in the main menu. Up and Down arrows move in the list, Enter opens an entry, Escape goes back. Lists have buttons for adding and deleting; each change asks you first when it cannot be undone. The entries you need most come first:</p>
 <ul>
 <li><strong>Public Profile</strong>: name, bio, company, location, website, X (Twitter) username, which verified email is shown publicly, and Available for hire.</li>
-<li><strong>Account Overview and Plan</strong>: your plan, two-factor authentication on or off, disk space, private repository limits.</li>
+<li><strong>Status</strong> and <strong>Social Media Links</strong>: the same as Edit Status and Edit Social Media Links in My Profile.</li>
 <li><strong>Email Addresses</strong>: add and delete addresses, make the primary address public or private.</li>
-<li><strong>SSH Keys</strong>, <strong>SSH Signing Keys</strong> and <strong>GPG Keys</strong>: list, add, copy and delete.</li>
-<li><strong>Organization Memberships</strong>: make your membership public or private, accept an invitation.</li>
-<li><strong>Repository Invitations</strong>: accept or decline.</li>
-<li><strong>Blocked Users</strong>: block and unblock people.</li>
+<li><strong>Personal Access Token</strong>: who the token belongs to, its permissions, the permissions some features need that it does not have, and when it expires. Buttons open GitHub's pages to make a new token or manage your tokens. When your token stops working within a week, the add-on says so the first time you open the main menu in an NVDA session.</li>
+<li><strong>SSH Keys</strong>, <strong>SSH Signing Keys</strong> and <strong>GPG Keys</strong>: list, copy and delete keys. <strong>Add from File</strong> opens your <code>.ssh</code> folder: choose the file that ends in <code>.pub</code> (for GPG, an exported public key), and give it a title; the computer's name is suggested. A private key is refused, so it can never be uploaded by mistake. <strong>Add Key by Pasting</strong> is still there. SSH keys that are also in this computer's <code>.ssh</code> folder say <em>this computer</em>, and deleting one asks you more carefully.</li>
+<li><strong>Notification Settings on GitHub.com</strong>: opens GitHub's page for where and how you are notified. GitHub only lets you change these on its website.</li>
+<li><strong>Repository Invitations</strong>: accept, decline or open the repository.</li>
+<li><strong>Organization Memberships</strong>: view an organization's repositories or profile, make your membership public or private, accept an invitation.</li>
+<li><strong>Watched Repositories</strong>: Enter opens a repository in the repository browser. Issues and Pull Requests open its lists directly; Unwatch stops watching it.</li>
+<li><strong>Blocked Users</strong>: block and unblock people. You can also block someone with <strong>Block</strong> in their profile window.</li>
 <li><strong>Temporary Interaction Limits</strong>: limit who can interact with your public repositories for 24 hours up to 6 months.</li>
-<li><strong>Watched Repositories</strong> (with Unwatch).</li>
-<li><strong>Codespaces Secrets</strong>: see the names and delete them. Adding a secret needs encryption that NVDA does not have, so that opens GitHub.</li>
-<li><strong>API Limits</strong>: how many requests you have left.</li>
-<li><strong>More Settings on GitHub.com</strong>: everything GitHub only allows on its website (password, two-factor authentication, sessions, notifications, billing, appearance, developer settings and more). Enter opens the page in your browser.</li>
+<li><strong>Account Overview and Plan</strong>: your plan, two-factor authentication on or off, disk space, private repository limits.</li>
+<li><strong>More Settings on GitHub.com</strong>: everything GitHub only allows on its website (password, two-factor authentication, sessions, billing, appearance, Codespaces, developer settings and more). Enter opens the page in your browser.</li>
 </ul>
-<p>If GitHub says permission denied, your token is missing a permission: use <strong>Create new personal access token</strong> in NVDA Settings, <em>GitHub for NVDA</em>, which ticks all of them.</p>
+<p>Before opening keys, email addresses or blocked users, the add-on checks that your token has the permission they need. If it does not, it says which one is missing and offers to open GitHub's page for a new token with every permission the add-on uses. Paste the new token in NVDA Settings, <em>GitHub for NVDA</em>.</p>
 
 <h2 id="others">Other people's profiles</h2>
-<p>Open them from a search, a follower list, an organization or Open Link or Repository. They show the same lines as your own profile (pinned repositories, organizations, achievements and badges, status and social media links) with the same View buttons, plus their X (Twitter) username and whether they are available for hire when set. An email address appears only when the person made it public, otherwise "not public". Organizations show their description and do not have the View buttons. <strong>Follow</strong> or <strong>Unfollow</strong>, <strong>Repositories</strong>, <strong>Starred Repositories</strong> (the repositories that person has starred; the profile text also shows how many), <strong>Followers</strong>, <strong>Following</strong>, <strong>Copy Link</strong> and <strong>Open in Browser</strong> are also there.</p>
+<p>Open them from a search, a follower list, an organization or Open Link or Repository. They show the same lines as your own profile (pinned repositories, organizations, achievements and badges, status and social media links) with the same View buttons, plus their X (Twitter) username and whether they are available for hire when set. An email address appears only when the person made it public, otherwise "not public". Organizations show their description and do not have the View buttons. <strong>Follow</strong> or <strong>Unfollow</strong>, <strong>Repositories</strong>, <strong>Starred Repositories</strong> (the repositories that person has starred; the profile text also shows how many), <strong>Followers</strong>, <strong>Following</strong>, <strong>Copy Link</strong> and <strong>Open in Browser</strong> are also there. <strong>Block</strong> (or <strong>Unblock</strong>) asks you first, then blocks the person: they can no longer follow you, comment on your repositories or mention you. It appears when your token has the <code>user</code> permission.</p>
 
 <h2 id="explore">Search Public Repositories</h2>
 <p>Search repositories, users and organizations, issues and pull requests, or code (code search needs a token). The window is laid out in this order, which is also the Tab order:</p>
@@ -212,7 +226,7 @@ a { color: #0b4fb3; }
 <li><code>Enter</code> opens a folder or file, <code>Delete</code> deletes the selected file or folder (with write access, after a Yes/No question and a commit message) and <code>Backspace</code> goes up one folder.</li>
 <li>Buttons: <strong>Go Up</strong>, <strong>Switch Branch</strong>, <strong>Commit History</strong>, <strong>Issues</strong>, <strong>Pull Requests</strong>, <strong>Actions</strong>, <strong>Releases</strong>, <strong>View Stars</strong> and <strong>More Options</strong> (plus Star or Unstar when you have a token). <strong>View Stars</strong> opens a list of everybody who starred the repository, like the Followers list: View Profile, View Repositories, Follow or Unfollow, and Open in Browser.</li>
 <li>Repository lines read: name, language, number of stars, then Public or Private, for example <em>computershortcut, Lua, 1 star, Public</em>. One star is "1 star", any other number is "2 stars", "0 stars" and so on.</li>
-<li><strong>More Options</strong> (with write access) has:
+<li><strong>More Options</strong> has <strong>Watch Settings</strong> (see below) and, with write access:
 <ul>
 <li><strong>Create New File</strong>: type the file name with its extension, such as <code>notes.txt</code>, <code>index.html</code> or <code>script.py</code>, to create any kind of text-based file. Use Upload Files for binary files such as images.</li>
 <li><strong>Create New Folder</strong>: adds a <code>.gitkeep</code> placeholder file, because Git cannot store empty folders.</li>
@@ -229,6 +243,13 @@ a { color: #0b4fb3; }
 <li><strong>Star</strong> and <strong>Unstar</strong> are one button next to Releases, and in repository lists. <strong>More Options</strong> and the file-changing actions are shown to everyone with write, maintain or admin access to the repository (the owner, collaborators and organization members with that role). Editing the description, website address and topics needs maintain or admin access; renaming, deleting, archiving, the default branch and visibility need admin access. The repository information ends with <em>Your access</em>, which shows your role: admin, maintain, write, triage or read.</li>
 <li>Make Public or Make Private, Edit Website Address and the copy links are on the <code>Applications</code> key menu in My Repositories.</li>
 </ul>
+<h3>Watch, fork and sync</h3>
+<ul>
+<li><strong>Watch</strong> is one button that changes its name, like Star and Unstar. When you are not watching, <strong>Watch</strong> watches all activity: you are notified about every issue, pull request and release. When you are watching, <strong>Unwatch</strong> goes back to being notified only about threads you take part in or are mentioned in. When you ignore the repository, <strong>Stop Ignoring</strong> does the same. Starring a repository does not watch it: a star is a bookmark and a "like", and it sends no notifications.</li>
+<li><strong>Watch Settings</strong>, in More Options (for everyone with a token), says what is set now and offers every choice: <em>All activity</em>, <em>Participating and mentions</em>, <em>Ignore</em> (never notified) and <em>Custom</em>. Custom picks kinds of events, such as only releases; GitHub only lets you set it on its website, so it opens the repository page there.</li>
+<li><strong>Fork</strong> makes your own copy of the repository, like the Fork button on GitHub. Choose the owner (your account or one of your organizations), the name, and whether to copy only the default branch (ticked, as on GitHub). If you already have a fork of the repository, the add-on offers to open it instead. GitHub copies the repository in the background; when it is ready you are asked whether to open it. Fork is also in repository lists (starred repositories, someone's repositories) and in the My Repositories menu.</li>
+<li><strong>Sync Fork</strong> (shown for your own forks) brings the branch you are on up to date with the same branch of the repository it was forked from, like GitHub's Sync fork button. The repository information says which repository it was forked from and, a moment after it opens, whether the branch is up to date, or how many commits it is ahead or behind. When your branch has commits of its own, GitHub merges the new commits in. If both changed the same lines, GitHub cannot sync, and the add-on offers to open GitHub's page for a pull request into your fork, where the conflicts can be solved.</li>
+</ul>
 
 <h2 id="files">Viewing and editing files</h2>
 <ul>
@@ -239,7 +260,21 @@ a { color: #0b4fb3; }
 </ul>
 
 <h2 id="issues">Issues and pull requests</h2>
-<p>Open one to read the description, comments, reviews, code comments and changed files as text. You can add comments, close or reopen (issues ask whether it was completed or not planned), submit a review (comment, approve or request changes) and merge by merge commit, squash or rebase. <strong>More Actions</strong> edits the title and description, labels and assignees, and locks or unlocks the conversation. <strong>New Pull Request</strong> is in the pull request list.</p>
+<p>Open one to read the description, comments, reviews, code comments and changed files as text. For a pull request this also says who was asked to review it and how its checks (tests) went: how many passed, failed or are still running, and the names of the failed ones. You can add comments, close or reopen (issues ask whether it was completed or not planned), submit a review (comment, approve or request changes) and merge. Merge only offers the methods the repository allows (merge commit, squash or rebase). <strong>New Pull Request</strong> is in the pull request list.</p>
+<ul>
+<li><strong>Comments</strong> lists every comment, one per line. Read one, reply (a comment on the code gets its reply in the same discussion; another comment is quoted in your reply), and edit or delete your own.</li>
+<li><strong>Files Changed</strong> (pull requests) lists every changed file. <strong>View Changes</strong> reads the changes of a file with line numbers: each line says its number and whether it was added or removed. <strong>View File</strong> opens the whole file from the pull request's branch, and <strong>Comment on a Line</strong> posts a comment on one line of the changes.</li>
+<li><strong>More Actions</strong> edits the title and description, labels and assignees, and locks or unlocks the conversation. For an open pull request it can also request reviewers, mark a draft ready for review (or turn it back into a draft), update the branch and resolve merge conflicts.</li>
+</ul>
+<h3>Update the branch and resolve merge conflicts</h3>
+<p><strong>Update Branch</strong> brings the latest changes of the base branch into the pull request's branch, like the button on GitHub. When the two branches changed the same lines, GitHub cannot do this by itself, and the add-on offers to resolve the conflicts. Merge offers the same when a pull request has conflicts.</p>
+<p><strong>Resolve Merge Conflicts</strong> merges the base branch into the pull request's branch and asks you only about what really conflicts:</p>
+<ul>
+<li>For a text file, a window goes through its conflicts one at a time and says where each one is. Three read-only boxes show the lines on your branch, on the base branch, and as they were before either change. Choose what to keep: your branch, the base branch, both (in either order) or neither. The Result box shows what will be saved, and you can edit it. Next Conflict and Previous Conflict move between them; Save File finishes the file.</li>
+<li>For a file that cannot be merged line by line (a binary file, a submodule, or a file deleted on one branch and changed on the other), you choose which branch's version to keep.</li>
+<li>Files that only one branch changed are merged for you.</li>
+</ul>
+<p>Before anything is saved you are asked to confirm. The result is one merge commit on the pull request's branch, the same as GitHub's own conflict editor makes. Cancel at any point and nothing changes. If somebody pushes to the branch while you work, nothing is saved and you are told to try again. Conflicts can only be resolved here when both branches are in the same repository; for a pull request from a fork, the add-on offers to open it in your browser.</p>
 
 <h2 id="actions">GitHub Actions</h2>
 <p>Lists workflow runs for all branches or the current branch, filtered by status. Open a run to hear every job and step with its result, read the log, re-run all or only failed jobs, or cancel it.</p>

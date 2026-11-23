@@ -7,7 +7,6 @@
 
 import addonHandler
 import io
-import json
 import re
 import ui
 import wx
@@ -15,6 +14,7 @@ import zipfile
 from logHandler import log
 
 from .core import (
+	count_text,
 	AccessibleDialog,
 	apply_access_keys,
 	ask_choice,
@@ -33,11 +33,14 @@ from .core import (
 	items_per_page,
 	make_label,
 	open_url,
+	open_state_label,
 	PAD,
 	PagedListDialog,
 	prompt_text,
 	Result,
+	review_state_label,
 	run_async,
+	run_from,
 	show_modal,
 	split_names,
 	tail,
@@ -45,8 +48,10 @@ from .core import (
 )
 from .repos import (
 	list_branches,
+	permissions,
 	q,
 )
+from .yamlsubset import load_yaml
 
 addonHandler.initTranslation()
 
@@ -95,7 +100,7 @@ def review_summary(reviews):
 	return approved, changes
 
 
-def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), inline=()):
+def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), inline=(), checks=()):
 	"""Everything about an issue or pull request as plain, readable text."""
 	pr = pr or {}
 	lines = [
@@ -118,9 +123,9 @@ def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), in
 		lines.append(_("Branches: {head} into {base}.").format(
 			head=(pr.get("head") or {}).get("label", "?"), base=(pr.get("base") or {}).get("label", "?")
 		))
-		lines.append(_("Changes: {additions} additions, {deletions} deletions in {files} files, {commits} commits.").format(
-			additions=pr.get("additions", 0), deletions=pr.get("deletions", 0),
-			files=pr.get("changed_files", 0), commits=pr.get("commits", 0),
+		lines.append(_("Changes: {additions}, {deletions} in {files}, {commits}.").format(
+			additions=count_text("additions", pr.get("additions", 0)), deletions=count_text("deletions", pr.get("deletions", 0)),
+			files=count_text("files", pr.get("changed_files", 0)), commits=count_text("commits", pr.get("commits", 0)),
 		))
 		if pr.get("merged"):
 			lines.append(_("This pull request has been merged."))
@@ -137,6 +142,10 @@ def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), in
 			lines.append(_("Approved by: {names}").format(names=", ".join(approved)))
 		if changes:
 			lines.append(_("Changes requested by: {names}").format(names=", ".join(changes)))
+		requested = [u.get("login") for u in pr.get("requested_reviewers") or [] if u.get("login")]
+		if requested:
+			lines.append(_("Review requested from: {names}").format(names=", ".join(requested)))
+		lines += list(checks or [])
 	lines += ["", _("Description:"), issue.get("body") or _("No description provided.")]
 	for number, comment in enumerate(comments, 1):
 		lines += [
@@ -152,7 +161,7 @@ def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), in
 			lines += [
 				_("Review by {author} on {date}: {state}").format(
 					author=user_login(review), date=format_date(review.get("submitted_at")),
-					state=(review.get("state") or "").replace("_", " ").lower(),
+					state=review_state_label(review.get("state")),
 				),
 				review.get("body") or "",
 			]
@@ -162,7 +171,8 @@ def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), in
 			where = comment.get("path", "")
 			line = comment.get("line") or comment.get("original_line")
 			if line:
-				where += _(" line {line}").format(line=line)
+				# Translators: where a comment on the code is, such as "src/app.py, line 12".
+				where = _("{path}, line {line}").format(path=where, line=line)
 			lines += [
 				_("{where}, by {author} on {date}:").format(
 					where=where, author=user_login(comment), date=format_date(comment.get("created_at"))
@@ -174,7 +184,7 @@ def compose_conversation(issue, pr=None, comments=(), files=None, reviews=(), in
 		for f in files:
 			lines.append(f"{f['status']}: {f['filename']} (+{f['additions']} -{f['deletions']})")
 		if len(files) >= 100:
-			lines.append(_("Only the first 100 files are listed."))
+			lines.append(_("Only the first 100 files are listed here. Files Changed lists them all, with their changes."))
 	return "\n".join(lines)
 
 
@@ -185,7 +195,7 @@ class ConversationDialog(AccessibleDialog):
 		title = _("Pull request #{number}") if is_pr else _("Issue #{number}")
 		super().__init__(parent, title.format(number=number), (800, 620))
 		self.full, self.number, self.is_pr, self.thread_id = full, number, is_pr, thread_id
-		self.issue, self.pr = {}, {}
+		self.issue, self.pr, self.repo = {}, {}, {}
 		self._marked_read = False
 		sizer = wx.BoxSizer(wx.VERTICAL)
 		sizer.Add(wx.StaticText(self, label=_("&Details and conversation:")), 0, wx.ALL, PAD)
@@ -195,7 +205,9 @@ class ConversationDialog(AccessibleDialog):
 		self.btn_comment = self.add_button(row, _("Add &Comment"), self.on_comment)
 		self.btn_state = self.add_button(row, _("Close or Re&open"), self.on_toggle_state)
 		self.btn_review = self.btn_merge = None
+		self.add_button(row, _("Comme&nts..."), self.on_comments)
 		if is_pr:
+			self.add_button(row, _("&Files Changed..."), self.on_files)
 			self.btn_review = self.add_button(row, _("Submit &Review"), self.on_review)
 			self.btn_merge = self.add_button(row, _("&Merge Pull Request"), self.on_merge)
 		self.btn_more = self.add_button(row, _("M&ore Actions..."), self.on_more)
@@ -232,10 +244,15 @@ class ConversationDialog(AccessibleDialog):
 				"pr": None, "files": None, "reviews": None, "inline": None,
 			}
 			if self.is_pr:
+				payload["repo"] = gh("GET", self._api)
 				payload["pr"] = gh("GET", f"{self._api}/pulls/{self.number}")
 				payload["files"] = gh("GET", f"{self._api}/pulls/{self.number}/files", params={"per_page": 100})
 				payload["reviews"] = gh_paged(f"{self._api}/pulls/{self.number}/reviews", max_items=100)
 				payload["inline"] = gh_paged(f"{self._api}/pulls/{self.number}/comments", max_items=200)
+				pr = payload["pr"]
+				if pr.ok and isinstance(pr.data, dict):
+					from .pullrequests import load_checks
+					payload["checks"] = load_checks(self.full, (pr.data.get("head") or {}).get("sha"))
 			return Result(200, payload, {})
 
 		def data_of(result, default):
@@ -249,9 +266,10 @@ class ConversationDialog(AccessibleDialog):
 			payload = res.data
 			self.issue = payload["issue"]
 			self.pr = data_of(payload["pr"], {})
+			self.repo = data_of(payload.get("repo"), {})
 			self.text.SetValue(compose_conversation(
 				self.issue, self.pr, data_of(payload["comments"], []), data_of(payload["files"], None),
-				data_of(payload["reviews"], []), data_of(payload["inline"], []),
+				data_of(payload["reviews"], []), data_of(payload["inline"], []), payload.get("checks") or (),
 			))
 			self.text.SetInsertionPoint(0)
 			self._update_buttons()
@@ -328,8 +346,15 @@ class ConversationDialog(AccessibleDialog):
 
 	def on_merge(self, event):
 		methods = [
-			(_("Merge commit"), "merge"), (_("Squash and merge"), "squash"), (_("Rebase and merge"), "rebase"),
+			(_("Merge commit"), "merge", "allow_merge_commit"), (_("Squash and merge"), "squash", "allow_squash_merge"),
+			(_("Rebase and merge"), "rebase", "allow_rebase_merge"),
 		]
+		# GitHub only reports which methods are allowed to people with write access; otherwise offer them all.
+		methods = [m for m in methods if self.repo.get(m[2], True)] or methods
+		if self.pr.get("mergeable_state") == "dirty" or self.pr.get("mergeable") is False:
+			if confirm(self, _("This pull request has merge conflicts, so it cannot be merged yet. Resolve the conflicts now?"), _("Merge Pull Request")):
+				self.on_resolve()
+			return
 		index = ask_choice(
 			self, _("Merge Pull Request"), _("How should this pull request be merged?"), [m[0] for m in methods]
 		)
@@ -388,16 +413,55 @@ class ConversationDialog(AccessibleDialog):
 	# --- more actions ------------------------------------------------
 	def on_more(self, event):
 		locked = bool(self.issue.get("locked"))
-		self.popup_menu([
+		entries = [
 			(_("Edit &Title and Description..."), self.on_edit),
 			(_("Edit &Labels..."), self.on_labels),
 			(_("Edit &Assignees..."), self.on_assignees),
 			(_("&Unlock Conversation") if locked else _("&Lock Conversation"), self.on_lock),
 			None,
+		]
+		if self.is_pr and self.pr and not self.pr.get("merged") and self.issue.get("state") == "open":
+			entries += [
+				(_("Request Re&viewers..."), self.on_reviewers),
+				(_("Mark Ready for Revie&w") if self.pr.get("draft") else _("Convert to &Draft"), self.on_draft),
+				(_("&Update Branch from {base}").format(base=(self.pr.get("base") or {}).get("ref", "")), self.on_update_branch),
+				(_("Resol&ve Merge Conflicts..."), self.on_resolve),
+				None,
+			]
+		self.popup_menu(entries + [
 			(_("Copy Lin&k"), lambda: copy_to_clipboard(self._url(), _("Link copied."))),
 			(_("Open in &Browser"), lambda: open_url(self._url())),
 			(_("Re&fresh"), self.load),
 		])
+
+	# --- pull request tools (pullrequests.py) ---------------------------------
+	def on_comments(self, event):
+		from .pullrequests import show_comments
+		show_comments(self, self.full, self.number, self.is_pr)
+		self.load()
+
+	def on_files(self, event):
+		if not self.pr:
+			ui.message(_("The pull request has not loaded yet."))
+			return
+		from .pullrequests import show_files
+		show_files(self, self.full, self.number, self.pr)
+
+	def on_reviewers(self):
+		from .pullrequests import request_reviewers
+		request_reviewers(self, self.full, self.number, self.pr, self.load)
+
+	def on_draft(self):
+		from .pullrequests import toggle_draft
+		toggle_draft(self, self.pr, self.load)
+
+	def on_update_branch(self):
+		from .pullrequests import update_branch
+		update_branch(self, self.full, self.number, self.pr, self.load)
+
+	def on_resolve(self):
+		from .pullrequests import resolve_conflicts
+		resolve_conflicts(self, self.full, self.pr, self.load)
 
 	def _patch(self, body, success):
 		def done(res):
@@ -507,9 +571,10 @@ def state_choices():
 
 def issue_label(i):
 	labels = ", ".join(label["name"] for label in i.get("labels") or [] if isinstance(label, dict))
-	text = _("#{number}, {title}, {state}, by {author}, {comments} comments, updated {date}").format(
+	# Translators: one issue in a list. {state} is open or closed, {date} is a date such as 2026-11-14.
+	text = _("#{number}, {title}, {state}, by {author}, {comments}, updated {date}").format(
 		number=i["number"], title=i["title"], state=_("open") if i["state"] == "open" else _("closed"),
-		author=(i.get("user") or {}).get("login", _("unknown")), comments=i.get("comments", 0),
+		author=(i.get("user") or {}).get("login", _("unknown")), comments=count_text("comments", i.get("comments", 0)),
 		date=format_date(i.get("updated_at")),
 	)
 	return text + (_(", labels: {labels}").format(labels=labels) if labels else "")
@@ -518,6 +583,7 @@ def issue_label(i):
 def pull_label(p):
 	state = _("merged") if p.get("merged_at") else (_("open") if p["state"] == "open" else _("closed"))
 	draft = _(", draft") if p.get("draft") else ""
+	# Translators: one pull request in a list. {draft} is empty or ", draft"; {head} and {base} are branch names.
 	return _("#{number}, {title}, {state}{draft}, by {author}, {head} into {base}, updated {date}").format(
 		number=p["number"], title=p["title"], state=state, draft=draft,
 		author=(p.get("user") or {}).get("login", _("unknown")),
@@ -531,7 +597,7 @@ def search_label(i):
 	repo = re.sub(r"^.*/repos/", "", i.get("repository_url", ""))
 	kind = _("pull request") if "pull_request" in i else _("issue")
 	return _("{repo} #{number}, {title}, {kind}, {state}, updated {date}").format(
-		repo=repo, number=i["number"], title=i["title"], kind=kind, state=i["state"],
+		repo=repo, number=i["number"], title=i["title"], kind=kind, state=open_state_label(i["state"]),
 		date=format_date(i.get("updated_at")),
 	)
 
@@ -665,9 +731,9 @@ def create_pull_request(parent, full, head_hint="", base_hint="", on_done=None):
 			else:
 				ui.message(_("Could not create the pull request.") + " " + result.message)
 
-		run_async(lambda: gh("POST", f"/repos/{full}/pulls", body=body), created)
+		run_from(parent, lambda: gh("POST", f"/repos/{full}/pulls", body=body), created)
 
-	run_async(lambda: list_branches(full), got)
+	run_from(parent, lambda: list_branches(full), got)
 
 
 def _merge_key(item, sort):
@@ -750,7 +816,7 @@ def show_my_work(parent):
 			title, query, empty = views[index]
 			search_results_dialog(parent, title, query, empty)
 
-	run_async(current_login, done)
+	run_from(parent, current_login, done)
 
 
 # ----------------------------------------------------------------------
@@ -781,6 +847,8 @@ def outcome(item):
 
 def run_label(run):
 	title = run.get("display_title") or run.get("name") or _("Workflow run")
+	# Translators: one workflow run in a list. {outcome} is a word such as succeeded or running; {event} is what
+	# started the run, such as push (not translated).
 	return _("{name}, {title}, {outcome}, branch {branch}, {event}, #{number}, {date}").format(
 		name=run.get("name", ""), title=title, outcome=outcome(run), branch=run.get("head_branch") or "?",
 		event=(run.get("event") or "").replace("_", " "), number=run.get("run_number", ""),
@@ -827,8 +895,8 @@ def extract_log(data):
 		return ""
 
 
-def show_run(parent, full, run_id, can_write=False):
-	"""Details of one workflow run."""
+def show_run(parent, full, run_id, can_write=None):
+	"""Details of one workflow run. can_write=None looks up your access (for runs opened from a link)."""
 	ui.message(_("Loading workflow run..."))
 
 	def work():
@@ -836,13 +904,17 @@ def show_run(parent, full, run_id, can_write=False):
 		if not run.ok:
 			return run
 		jobs = gh_paged(f"/repos/{full}/actions/runs/{run_id}/jobs", unwrap="jobs", max_items=100)
-		return Result(200, (run.data, jobs.data if jobs.ok else []), {})
+		writer = can_write
+		if writer is None:
+			repo = gh("GET", f"/repos/{full}")
+			writer = permissions(repo.data)[0] if repo.ok and isinstance(repo.data, dict) else False
+		return Result(200, (run.data, jobs.data if jobs.ok else [], writer), {})
 
 	def done(res):
 		if not res.ok:
 			ui.message(_("Could not load the run.") + " " + res.message)
 			return
-		run, jobs = res.data
+		run, jobs, writer = res.data
 
 		def show_log(dialog):
 			ui.message(_("Loading log..."))
@@ -862,7 +934,7 @@ def show_run(parent, full, run_id, can_write=False):
 					label=_("&Log (the end comes last):"), wrap=False,
 				))
 
-			run_async(lambda: gh("GET", f"/repos/{full}/actions/runs/{run_id}/logs", binary=True, timeout=120), got)
+			run_from(dialog, lambda: gh("GET", f"/repos/{full}/actions/runs/{run_id}/logs", binary=True, timeout=120), got)
 
 		def rerun(dialog, failed_only):
 			if not confirm(dialog, _("Run this workflow again?")):
@@ -884,7 +956,7 @@ def show_run(parent, full, run_id, can_write=False):
 			run_async(lambda: gh("POST", f"/repos/{full}/actions/runs/{run_id}/cancel"), got)
 
 		buttons = [(_("Show &Log"), show_log)]
-		if can_write:
+		if writer:
 			buttons += [
 				(_("Re-run &All Jobs"), lambda d: rerun(d, False)),
 				(_("Re-run &Failed Jobs"), lambda d: rerun(d, True)),
@@ -899,7 +971,7 @@ def show_run(parent, full, run_id, can_write=False):
 			buttons=buttons, label=_("Run &details:"),
 		))
 
-	run_async(work, done)
+	run_from(parent, work, done)
 
 
 def show_runs(parent, full, ref="", can_write=False):
@@ -930,303 +1002,6 @@ def show_runs(parent, full, ref="", can_write=False):
 			(_("S&tatus:"), [_("Any"), _("Succeeded"), _("Failed"), _("Running")]),
 		],
 	))
-
-
-class YamlError(ValueError):
-	pass
-
-
-_BLOCK_HEADER = re.compile(r"^([|>])([+-]?)(\d?)([+-]?)$")
-_INT = re.compile(r"^[-+]?\d+$")
-_FLOAT = re.compile(r"^[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?$")
-
-
-def _strip_comment(text):
-	"""Remove a trailing ' # comment' that is not inside quotes."""
-	quote = None
-	for index, char in enumerate(text):
-		if quote:
-			if char == quote:
-				quote = None
-		elif char in "'\"" and (index == 0 or text[index - 1] in " \t[{,:-"):
-			quote = char
-		elif char == "#" and (index == 0 or text[index - 1] in " \t"):
-			return text[:index].rstrip()
-	return text.rstrip()
-
-
-def _unquote(text):
-	if text[0] == "'":
-		if len(text) < 2 or text[-1] != "'":
-			raise YamlError("unterminated quote")
-		return text[1:-1].replace("''", "'")
-	if len(text) < 2 or text[-1] != '"':
-		raise YamlError("unterminated quote")
-	try:
-		return json.loads(text)
-	except ValueError:
-		return text[1:-1].replace('\\"', '"').replace("\\n", "\n").replace("\\t", "\t").replace("\\\\", "\\")
-
-
-def _plain(text):
-	if text in ("", "~") or text.lower() == "null":
-		return None
-	low = text.lower()
-	if low == "true":
-		return True
-	if low == "false":
-		return False
-	if _INT.match(text):
-		return int(text)
-	if _FLOAT.match(text):
-		return float(text)
-	return text
-
-
-def _flow(text, pos=0):
-	"""Parse one flow value ([...], {...}, quoted or plain) starting at pos. Returns (value, new position)."""
-	length = len(text)
-	while pos < length and text[pos] in " \t":
-		pos += 1
-	if pos >= length:
-		return None, pos
-	char = text[pos]
-	if char == "[":
-		items, pos = [], pos + 1
-		while True:
-			while pos < length and text[pos] in " \t,":
-				pos += 1
-			if pos >= length:
-				raise YamlError("unterminated [")
-			if text[pos] == "]":
-				return items, pos + 1
-			value, pos = _flow(text, pos)
-			items.append(value)
-	if char == "{":
-		result, pos = {}, pos + 1
-		while True:
-			while pos < length and text[pos] in " \t,":
-				pos += 1
-			if pos >= length:
-				raise YamlError("unterminated {")
-			if text[pos] == "}":
-				return result, pos + 1
-			key, pos = _flow_scalar(text, pos, ":}")
-			while pos < length and text[pos] in " \t":
-				pos += 1
-			value = None
-			if pos < length and text[pos] == ":":
-				value, pos = _flow(text, pos + 1)
-			result[str(key)] = value
-	return _flow_scalar(text, pos, ",]}")
-
-
-def _flow_scalar(text, pos, stops):
-	length = len(text)
-	if pos < length and text[pos] in "'\"":
-		quote, end = text[pos], pos + 1
-		while end < length:
-			if text[end] == "\\" and quote == '"':
-				end += 2
-				continue
-			if text[end] == quote:
-				if quote == "'" and end + 1 < length and text[end + 1] == "'":
-					end += 2
-					continue
-				break
-			end += 1
-		return _unquote(text[pos:end + 1]), end + 1
-	end = pos
-	while end < length and text[end] not in stops:
-		end += 1
-	return _plain(text[pos:end].strip()), end
-
-
-def _split_key(content):
-	"""'key: value' -> (key, value text). None when the line is not a mapping entry."""
-	if not content or content[0] in "[{":
-		return None
-	if content[0] in "'\"":
-		quote, end = content[0], 1
-		while end < len(content) and content[end] != quote:
-			end += 2 if content[end] == "\\" and quote == '"' else 1
-		rest = content[end + 1:].lstrip()
-		if end >= len(content) or not rest.startswith(":"):
-			return None
-		return _unquote(content[:end + 1]), rest[1:].strip()
-	match = re.match(r"^(.*?[^\s]):(?:\s+(.*))?$", content)
-	if not match or content.startswith("- "):
-		return None
-	return match.group(1).strip(), (match.group(2) or "").strip()
-
-
-class _Reader:
-	def __init__(self, text):
-		text = text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n")
-		self.lines = text.split("\n")
-		self.i = 0
-
-	def peek(self):
-		"""(index, indent, content without comment) of the next meaningful line, or None."""
-		j = self.i
-		while j < len(self.lines):
-			raw = self.lines[j]
-			content = _strip_comment(raw.strip())
-			if not content or (raw[:3] in ("---", "...") and raw.strip() in ("---", "...")):
-				j += 1
-				continue
-			if content.startswith("%"):
-				j += 1
-				continue
-			indent = len(raw) - len(raw.lstrip(" "))
-			self.i = j
-			return j, indent, content
-		self.i = len(self.lines)
-		return None
-
-	def node(self, minimum):
-		item = self.peek()
-		if item is None or item[1] < minimum:
-			return None
-		_j, indent, content = item
-		if content == "-" or content.startswith("- "):
-			return self.sequence(indent)
-		if _split_key(content):
-			return self.mapping(indent)
-		self.i += 1
-		return self.inline(content)
-
-	def inline(self, text):
-		if text[0] in "[{":
-			value, pos = _flow(text)
-			if text[pos:].strip():
-				raise YamlError("unexpected text after flow value")
-			return value
-		if text[0] in "'\"":
-			return _unquote(text)
-		return _plain(text)
-
-	def block_scalar(self, header, parent_indent):
-		match = _BLOCK_HEADER.match(header)
-		style, chomp = match.group(1), (match.group(2) or match.group(4))
-		lines = []
-		block_indent = None
-		while self.i < len(self.lines):
-			raw = self.lines[self.i]
-			if raw.strip() == "":
-				lines.append("")
-				self.i += 1
-				continue
-			indent = len(raw) - len(raw.lstrip(" "))
-			if block_indent is None:
-				if indent <= parent_indent:
-					break
-				block_indent = indent
-			if indent < block_indent:
-				break
-			lines.append(raw[block_indent:])
-			self.i += 1
-		trailing = 0
-		while lines and lines[-1] == "":
-			lines.pop()
-			trailing += 1
-		if style == "|":
-			text = "\n".join(lines)
-		else:
-			text, previous_blank = "", False
-			for number, line in enumerate(lines):
-				if number == 0:
-					text = line
-				elif line == "":
-					text += "\n"
-					previous_blank = True
-				else:
-					text += ("" if previous_blank else " ") + line
-					previous_blank = False
-		if not lines:
-			return ""
-		if chomp == "-":
-			return text
-		if chomp == "+":
-			return text + "\n" * (trailing + 1)
-		return text + "\n"
-
-	def value(self, rest, indent):
-		"""The value after 'key:' (rest) or after '- ' for an entry at the given indent."""
-		if rest == "":
-			item = self.peek()
-			if item is None:
-				return None
-			_j, next_indent, content = item
-			if next_indent > indent:
-				return self.node(next_indent)
-			if next_indent == indent and (content == "-" or content.startswith("- ")):
-				return self.sequence(indent)
-			return None
-		if _BLOCK_HEADER.match(rest):
-			return self.block_scalar(rest, indent)
-		value = self.inline(rest)
-		# A plain text that continues on the following, deeper lines.
-		if isinstance(value, str) and rest[0] not in "'\"[{":
-			while self.i < len(self.lines):
-				raw = self.lines[self.i]
-				content = _strip_comment(raw.strip())
-				if not content or len(raw) - len(raw.lstrip(" ")) <= indent:
-					break
-				value += " " + content
-				self.i += 1
-		return value
-
-	def mapping(self, indent):
-		result = {}
-		while True:
-			item = self.peek()
-			if item is None:
-				break
-			_j, current, content = item
-			if current != indent:
-				if current > indent:
-					raise YamlError("bad indentation")
-				break
-			parts = _split_key(content)
-			if not parts:
-				break
-			self.i += 1
-			result[str(parts[0])] = self.value(parts[1], indent)
-		return result
-
-	def sequence(self, indent):
-		items = []
-		while True:
-			item = self.peek()
-			if item is None:
-				break
-			j, current, content = item
-			if current != indent or not (content == "-" or content.startswith("- ")):
-				if current > indent:
-					raise YamlError("bad indentation")
-				break
-			after = content[1:].lstrip()
-			offset = len(content) - len(after)
-			if after and _split_key(after) and not _BLOCK_HEADER.match(after):
-				# "- key: value": the entry is a mapping whose first key sits after the dash.
-				raw = self.lines[j]
-				self.lines[j] = " " * (indent + offset) + raw.strip()[offset:].lstrip()
-				items.append(self.mapping(indent + offset))
-				continue
-			self.i += 1
-			items.append(self.value(after, indent))
-		return items
-
-
-def load_yaml(text):
-	"""Parse the YAML subset used by issue templates. Raises YamlError (a ValueError) when it cannot."""
-	try:
-		return _Reader(text).node(0)
-	except YamlError:
-		raise
-	except Exception as e:
-		raise YamlError(str(e))
 
 
 TEMPLATE_DIRS = (".github/ISSUE_TEMPLATE", "ISSUE_TEMPLATE", "docs/ISSUE_TEMPLATE")
@@ -1315,11 +1090,11 @@ def _fetch_text(url):
 def fetch_templates(full):
 	"""Blocking. Returns (templates, config) where config is {"blank": bool, "links": [(name, url, about)]}."""
 	templates, config = [], {"blank": True, "links": []}
-	entries, directory = [], ""
+	entries = []
 	for candidate in TEMPLATE_DIRS:
 		res = gh("GET", f"/repos/{full}/contents/{q(candidate, '/')}")
 		if res.ok and isinstance(res.data, list):
-			entries, directory = res.data, candidate
+			entries = res.data
 			break
 	for entry in sorted(entries, key=lambda e: e.get("name", "").lower()):
 		name = entry.get("name", "")

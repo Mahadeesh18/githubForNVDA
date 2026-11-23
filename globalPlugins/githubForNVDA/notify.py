@@ -8,6 +8,7 @@
 import addonHandler
 import datetime
 import gui
+import json
 import nvwave
 import os
 import re
@@ -20,11 +21,12 @@ from gui.settingsDialogs import SettingsPanel
 from logHandler import log
 
 from .core import (
+	count_text,
 	AccessibleDialog,
 	ask_form,
 	config_dir,
 	confirm,
-	confirm_typed,
+	confirm_danger,
 	copy_to_clipboard,
 	delete_token,
 	escape_label,
@@ -33,10 +35,12 @@ from .core import (
 	get_clipboard_text,
 	get_pref,
 	gh,
+	gh_paged,
 	has_token,
 	inform,
 	items_per_page,
 	load_token,
+	local_fetch,
 	NOTIFICATION_FILTER_ALL,
 	NOTIFICATION_FILTER_DIRECT,
 	NOTIFICATION_INTERVALS,
@@ -45,15 +49,20 @@ from .core import (
 	PAD,
 	PagedListDialog,
 	parse_github_link,
+	prune_done,
+	relative_time,
 	prompt_text,
 	repo_from_api_url,
 	Result,
 	run_async,
+	run_from,
 	save_token,
 	say,
 	set_pref,
 	show_modal,
+	subject_type_label,
 	TextViewDialog,
+	without_done,
 )
 from .repos import (
 	open_link,
@@ -87,14 +96,123 @@ def reasons():
 	}
 
 
-def notification_label(n):
+# ----------------------------------------------------------------------
+# Notifications marked as done. GitHub's API has no "done" state it reports back: a thread marked done keeps
+# showing up in the lists (as read). So the add-on remembers which threads you marked done, and hides them
+# until something new happens in them, the way GitHub's own inbox does.
+# ----------------------------------------------------------------------
+
+class DoneStore:
+	"""{thread id: {"updated_at", "done_at", "item"}} saved in done_notifications.json. Thread safe."""
+
+	def __init__(self):
+		self._lock = threading.Lock()
+		self._data = None
+
+	@property
+	def path(self):
+		return os.path.join(config_dir(), "done_notifications.json")
+
+	def _load(self):
+		if self._data is None:
+			try:
+				with open(self.path, "r", encoding="utf-8") as f:
+					data = json.load(f)
+				self._data = data if isinstance(data, dict) else {}
+			except FileNotFoundError:
+				self._data = {}
+			except Exception:
+				log.debugWarning("GitHub for NVDA: could not read done notifications", exc_info=True)
+				self._data = {}
+		return self._data
+
+	def _save(self):
+		try:
+			temporary = self.path + ".tmp"
+			with open(temporary, "w", encoding="utf-8") as f:
+				json.dump(self._data, f)
+			os.replace(temporary, self.path)
+		except OSError:
+			log.error("GitHub for NVDA: could not save done notifications", exc_info=True)
+
+	def mark(self, notification):
+		with self._lock:
+			data = self._load()
+			data[str(notification["id"])] = {
+				"updated_at": notification.get("updated_at") or "", "done_at": time.time(),
+				"item": dict(notification, unread=False),
+			}
+			self._data = prune_done(data, time.time())
+			self._save()
+
+	def undo(self, notification):
+		with self._lock:
+			if self._load().pop(str(notification.get("id")), None) is not None:
+				self._save()
+
+	def hide_done(self, items):
+		with self._lock:
+			return without_done(items, self._load())
+
+	def items(self):
+		"""The threads marked done, most recently done first."""
+		with self._lock:
+			entries = sorted(self._load().values(), key=lambda e: float(e.get("done_at") or 0), reverse=True)
+		return [dict(e["item"], _done=True) for e in entries if isinstance(e.get("item"), dict) and e["item"].get("id")]
+
+
+done_store = DoneStore()
+
+
+def notification_label(n, kind=True):
+	"""One notification as the list reads it, what matters first: unread or not, then the title, then why you
+	got it, how long ago and the repository. kind=False leaves out the kind (pull request, issue...), for a
+	list already filtered to one kind."""
 	subject = n.get("subject") or {}
-	state = _("unread") if n.get("unread") else _("read")
-	return _("{repo}: {title}, {type}, {reason}, {state}, {date}").format(
-		repo=(n.get("repository") or {}).get("full_name", ""), title=subject.get("title", ""),
-		type=subject.get("type", ""), reason=reasons().get(n.get("reason"), n.get("reason", "")),
-		state=state, date=format_date(n.get("updated_at")),
+	if n.get("_done"):
+		state = _("done")
+	else:
+		state = _("unread") if n.get("unread") else _("read")
+	values = dict(
+		state=state, title=subject.get("title", ""), type=subject_type_label(subject.get("type")),
+		reason=reasons().get(n.get("reason"), n.get("reason", "")), date=relative_time(n.get("updated_at")),
+		repo=(n.get("repository") or {}).get("full_name", ""),
 	)
+	if not kind:
+		# Translators: one notification in a list showing only one kind (only pull requests, say). {state} is
+		# read, unread or done, {reason} why you got it (such as "you were mentioned"), {date} says how long
+		# ago, such as "3 hours ago" (or a date for anything older than a week).
+		return _("{state}, {title}, {reason}, {date}, {repo}").format(**values)
+	# Translators: one notification in a list. {state} is read, unread or done, {type} is issue, pull
+	# request..., {reason} why you got it (such as "you were mentioned"), {date} says how long ago, such as
+	# "3 hours ago" (or a date for anything older than a week).
+	return _("{state}, {title}, {type}, {reason}, {date}, {repo}").format(**values)
+
+
+def notification_kinds():
+	"""What notifications are about, as the Filter drop-down names them: GitHub's subject type -> plural name."""
+	return {
+		"PullRequest": _("Pull requests"), "Issue": _("Issues"), "Discussion": _("Discussions"),
+		"Release": _("Releases"), "Commit": _("Commits"), "CheckSuite": _("Workflow runs"),
+		"WorkflowRun": _("Workflow runs"), "RepositoryVulnerabilityAlert": _("Security alerts"),
+		"RepositoryDependabotAlertsThread": _("Dependabot alerts"), "RepositoryInvitation": _("Repository invitations"),
+	}
+
+
+def notification_filters(items):
+	"""The Filter drop-down of the Notifications window: everything, then one entry for each kind found among
+	the loaded notifications (pull requests, issues...), so they can be read apart. [(key, text, test)]"""
+	names = notification_kinds()
+
+	def kind_of(n):
+		kind = (n.get("subject") or {}).get("type") or ""
+		return names.get(kind, kind)
+
+	entries = [("all", _("All notifications"), lambda n: True)]
+	order = list(dict.fromkeys(names.values()))  # pull requests and issues first
+	kinds = sorted({kind_of(n) for n in items} - {""}, key=lambda k: (order.index(k) if k in order else len(order), k))
+	entries += [(kind, kind, lambda n, k=kind: kind_of(n) == k) for kind in kinds]
+	return entries
 
 
 def subject_number(url):
@@ -117,23 +235,29 @@ def html_url(n):
 	return f"https://github.com/{full}/{kind}/{ident}"
 
 
+UNREAD_COUNT_LIMIT = 2000
+
+
 def count_unread():
-	"""Blocking: return (count, more) of unread notifications, or a failed Result."""
-	res = gh("GET", "/notifications", params={"per_page": 50}, retries=1, timeout=15)
+	"""Blocking: return (count, more) of unread notifications, or a failed Result. Every page is counted;
+	more is True only past UNREAD_COUNT_LIMIT."""
+	res = gh_paged("/notifications", max_items=UNREAD_COUNT_LIMIT, per_page=50)  # GitHub allows 50 per page here
 	if not res.ok or not isinstance(res.data, list):
 		return res
-	return len(res.data), res.has_next
+	return len(done_store.hide_done(res.data)), bool((res.headers or {}).get("X-Truncated"))
 
 
 def unread_message(count, more=False):
 	"""The sentence that says how many notifications are unread."""
 	if count == 0:
 		return _("You have no unread GitHub notifications.")
-	if count == 1 and not more:
-		return _("You have 1 unread GitHub notification.")
 	if more:
-		return _("You have {count} or more unread GitHub notifications.").format(count=count)
-	return _("You have {count} unread GitHub notifications.").format(count=count)
+		return ngettext(
+			"You have {count} or more unread GitHub notification.", "You have {count} or more unread GitHub notifications.", count,
+		).format(count=count)
+	return ngettext(
+		"You have {count} unread GitHub notification.", "You have {count} unread GitHub notifications.", count,
+	).format(count=count)
 
 
 def announce_unread():
@@ -148,6 +272,26 @@ def announce_unread():
 	run_async(count_unread, done)
 
 
+def leave_list(dlg, n, message):
+	"""Take a notification out of the list, put the focus on the first notification and say what happened.
+
+	The notifications you still need to deal with stay together at the top: each one you mark read or done is
+	gone, and you start again from the top."""
+	announce_first(dlg, dlg.remove_item(n, select_first=True), message)
+
+
+def announce_first(dlg, first, message):
+	"""Say what happened and where the focus is now: on the first notification, or the list is empty."""
+	if first is None:
+		ui.message(message + " " + dlg.empty)
+		return
+	if dlg.listbox.HasFocus():
+		ui.message(message + " " + dlg.line(first))  # the selection moved; NVDA would not say it
+	else:
+		ui.message(message)
+		dlg.listbox.SetFocus()  # NVDA reads the first notification
+
+
 def open_notification(dialog, n):
 	"""Open the thing a notification is about."""
 	subject = n.get("subject") or {}
@@ -155,7 +299,9 @@ def open_notification(dialog, n):
 	full = (n.get("repository") or {}).get("full_name") or repo_from_api_url(subject.get("url"))
 	if number and subject.get("type") in ("Issue", "PullRequest") and full:
 		show_conversation(dialog, full, number, subject.get("type") == "PullRequest", n.get("id"))
-		dialog.reload()
+		if get_pref("markReadOnView") and n.get("unread") and not n.get("_done"):
+			n["unread"] = False
+			leave_list(dialog, n, _("Marked as read."))
 	elif subject.get("type") == "Commit" and full and subject.get("url"):
 		from .repos import show_commit
 		show_commit(dialog, full, subject["url"].rsplit("/", 1)[-1])
@@ -164,30 +310,57 @@ def open_notification(dialog, n):
 
 
 def show_notifications(parent):
+	"""Your notifications. The ones you marked done are hidden until something new happens in them;
+	"Show: Done" lists them."""
+	DONE_VIEW = 3
+
 	def fetch(page, selections):
+		if selections[0] == DONE_VIEW:
+			return local_fetch(done_store.items())(page, selections)
 		params = {"per_page": items_per_page(), "page": page}
 		if selections[0] == 1:
 			params["all"] = "true"
 		elif selections[0] == 2:
 			params["participating"] = "true"  # only threads you are directly involved in
-		return gh("GET", "/notifications", params=params)
+		res = gh("GET", "/notifications", params=params)
+		if res.ok and isinstance(res.data, list):
+			return Result(res.code, done_store.hide_done(res.data), res.headers)
+		return res
 
 	def mark_read(dlg, n):
+		if n.get("_done"):
+			ui.message(_("This notification is done; it is already read."))
+			return
+
+		if not n.get("unread"):
+			leave_list(dlg, n, _("Already read."))
+			return
+
 		def done(res):
 			if res.ok:
-				ui.message(_("Marked as read."))
-				dlg.reload()
+				n["unread"] = False
+				leave_list(dlg, n, _("Marked as read."))
 			else:
 				ui.message(_("Could not mark as read.") + " " + res.message)
 
 		dlg.run(lambda: gh("PATCH", f"/notifications/threads/{n['id']}"), done)
 
-	def mark_done(dlg, n):
+	def done_label(n):
+		if n is not None and n.get("_done"):
+			return _("Move Back to &Inbox")
+		return _("Mark as &Done")
+
+	def toggle_done(dlg, n):
+		if n.get("_done"):
+			# GitHub cannot undo "done", but it still lists the thread: forgetting it here brings it back.
+			done_store.undo(n)
+			leave_list(dlg, n, _("Moved back to the inbox. It shows under All, and under Unread when something new happens."))
+			return
+
 		def done(res):
 			if res.ok:
-				ui.message(_("Marked as done."))
-				dlg.forget(n)
-				dlg.reload()
+				done_store.mark(n)
+				leave_list(dlg, n, _("Marked as done."))
 			else:
 				ui.message(_("Could not mark as done.") + " " + res.message)
 
@@ -196,13 +369,15 @@ def show_notifications(parent):
 	def mute(dlg, n):
 		def done(res):
 			if res.ok:
-				ui.message(_("Muted. You will not be notified about this thread again."))
-				dlg.reload()
+				done_store.mark(n)
+				leave_list(dlg, n, _("Muted. You will not be notified about this thread again."))
 			else:
 				ui.message(_("Could not mute it.") + " " + res.message)
 
 		def work():
-			gh("PUT", f"/notifications/threads/{n['id']}/subscription", body={"ignored": True})
+			muted = gh("PUT", f"/notifications/threads/{n['id']}/subscription", body={"ignored": True})
+			if not muted.ok:
+				return muted
 			return gh("DELETE", f"/notifications/threads/{n['id']}")
 
 		dlg.run(work, done)
@@ -214,8 +389,11 @@ def show_notifications(parent):
 
 		def done(res):
 			if res.ok:
-				ui.message(_("All notifications marked as read."))
-				dlg.reload()
+				marked = [item for item in dlg.items if item.get("unread")]
+				for item in marked:
+					item["unread"] = False
+					dlg.remove_item(item, select_first=True)
+				announce_first(dlg, dlg.selected(), _("All notifications marked as read."))
 			else:
 				ui.message(_("Could not mark all as read.") + " " + res.message)
 
@@ -224,7 +402,7 @@ def show_notifications(parent):
 	actions = [
 		(_("&View"), open_notification),
 		(_("Mark as &Read"), mark_read),
-		(_("Mark as &Done"), mark_done),
+		(done_label, toggle_done),
 		(_("&Mute Thread"), mute),
 		(_("Mark &All as Read"), mark_all, False),
 		(_("Open in &Browser"), lambda d, n: open_url(html_url(n))),
@@ -232,7 +410,8 @@ def show_notifications(parent):
 	]
 	show_modal(PagedListDialog(
 		parent, _("Notifications"), fetch, notification_label, actions, empty=_("No notifications."),
-		choices=[(_("&Show:"), [_("Unread only"), _("All"), _("Unread, involving me directly")])],
+		choices=[(_("&Show:"), [_("Unread only"), _("All, except done"), _("Unread, involving me directly"), _("Done")])],
+		filter_choices=notification_filters, filtered_label=lambda n: notification_label(n, kind=False),
 	))
 
 
@@ -261,9 +440,7 @@ def summarize(items, details):
 			repo = (n.get("repository") or {}).get("name") or repo_from_api_url(subject.get("url"))
 			parts.append(f"{repo}: {subject.get('title', '')}")
 		return _("New GitHub notification: {details}").format(details="; ".join(parts))
-	if count == 1:
-		return _("1 new GitHub notification")
-	return _("{count} new GitHub notifications").format(count=count)
+	return ngettext("{count} new GitHub notification", "{count} new GitHub notifications", count).format(count=count)
 
 
 SOUNDS_DIR = os.path.join(os.path.dirname(__file__), "sounds")
@@ -318,12 +495,6 @@ def play_notification_sound(choice=None, custom_file=None):
 				nvwave.playWaveFile(NOTIFICATION_SOUND, asynchronous=True)
 			except Exception:
 				log.debugWarning("GitHub for NVDA: default notification sound failed", exc_info=True)
-
-
-def newer_than(items, last_seen):
-	"""Notifications updated after last_seen (an ISO string), oldest first."""
-	fresh = [n for n in items if (n.get("updated_at") or "") > last_seen]
-	return sorted(fresh, key=lambda n: n.get("updated_at") or "")
 
 
 def new_since(items, seen):
@@ -493,15 +664,20 @@ class NotificationMonitor:
 		if not isinstance(res.data, list) or not res.ok:
 			return
 		mode = get_pref("notificationFilter")
-		wanted = [n for n in fresh if matches_filter(n, mode)]
+		wanted = [n for n in done_store.hide_done(fresh) if matches_filter(n, mode)]
+		unread, more = len(done_store.hide_done(res.data)), res.has_next
+		if manual and res.has_next:
+			counted = count_unread()  # more than one page: count them all
+			if isinstance(counted, tuple):
+				unread, more = counted
 		if manual:
 			# Speak at once from this thread (say() is thread safe) instead of hopping through the GUI loop.
 			if not was_primed:
-				say(unread_message(len(res.data), res.has_next))
+				say(unread_message(unread, more))
 			elif wanted:
 				self._announce(wanted, force=True)
 			else:
-				say(_("No new GitHub notifications.") + " " + unread_message(len(res.data), res.has_next))
+				say(_("No new GitHub notifications.") + " " + unread_message(unread, more))
 			return
 		if was_primed and wanted:
 			self._announce(wanted)
@@ -535,7 +711,6 @@ def recommended_scopes():
 		"write:public_key": _("SSH keys"),
 		"write:gpg_key": _("GPG keys"),
 		"admin:ssh_signing_key": _("SSH signing keys"),
-		"codespace:secrets": _("Codespaces secrets"),
 	}
 
 
@@ -570,7 +745,7 @@ def require_token(parent=None):
 # GitHub's page for making a classic token, with the permissions this add-on needs already ticked.
 NEW_TOKEN_PAGE = (
 	"https://github.com/settings/tokens/new?description=GitHub%20for%20NVDA"
-	"&scopes=repo,notifications,gist,workflow,user,write:public_key,write:gpg_key,admin:ssh_signing_key,codespace:secrets"
+	"&scopes=repo,notifications,gist,workflow,user,write:public_key,write:gpg_key,admin:ssh_signing_key"
 )
 
 
@@ -578,12 +753,12 @@ def interval_label(seconds):
 	if seconds == 0:
 		return _("Off")
 	if seconds < 60:
-		return _("Every {seconds} seconds").format(seconds=seconds)
+		return ngettext("Every {seconds} second", "Every {seconds} seconds", seconds).format(seconds=seconds)
 	if seconds == 60:
 		return _("Every minute")
 	if seconds == 3600:
 		return _("Every hour")
-	return _("Every {minutes} minutes").format(minutes=seconds // 60)
+	return ngettext("Every {minutes} minute", "Every {minutes} minutes", seconds // 60).format(minutes=seconds // 60)
 
 
 def nearest_interval(seconds):
@@ -965,25 +1140,53 @@ class SearchDialog(AccessibleDialog):
 		self._search_id += 1
 		request = self._search_id
 
-		def done(res):
-			if request != self._search_id:
+		# The first page is shown as soon as it arrives; the other pages are added to the end of the list while
+		# you read, without moving the focus. A search for a common word has up to 10 pages and takes about
+		# half a minute in all.
+		shown = {"first": True}
+
+		def current():
+			return request == self._search_id and not self._dead
+
+		def show(items, total, final):
+			if not current():
 				return
-			if not res.ok or not isinstance(res.data, dict):
-				ui.message(_("Search failed.") + " " + res.message)
-				return
-			items = res.data.get("items", [])
-			self.kind, self.results = kind, items
-			self.total = res.data.get("total_count", 0)
-			self.listbox.Set([self._label(r) for r in items])
-			if items:
+			self.kind, self.total = kind, total
+			if shown["first"]:
+				shown["first"] = False
+				self.results = list(items)
+				self.listbox.Set([self._label(r) for r in items])
+				if not items:
+					ui.message(_("Nothing found."))
+					return
 				self.listbox.SetSelection(0)
 				self.listbox.SetFocus()
-				if self.total > len(items):
-					ui.message(_("{count} of {total} results").format(count=len(items), total=self.total))
+				if not final:
+					ui.message(ngettext(
+						"{count} of {total} result. Loading more...", "{count} of {total} results. Loading more...", total,
+					).format(count=len(items), total=total))
+				elif total > len(items):
+					ui.message(ngettext("{count} of {total} result", "{count} of {total} results", total).format(count=len(items), total=total))
 				else:
-					ui.message(_("{count} results").format(count=len(items)))
-			else:
-				ui.message(_("Nothing found."))
+					ui.message(count_text("results", len(items)))
+				return
+			new = items[len(self.results):]
+			if new:
+				self.results.extend(new)
+				self.listbox.Append([self._label(r) for r in new])
+			if final:
+				ui.message(ngettext("All {count} result loaded.", "All {count} results loaded.", len(self.results)).format(count=len(self.results)))
+
+		def done(res):
+			if res is None or not current():
+				return
+			if not res.ok or not isinstance(res.data, dict):
+				if shown["first"]:
+					ui.message(_("Search failed.") + " " + res.message)
+				else:
+					ui.message(_("Could not load the rest of the results.") + " " + res.message)
+				return
+			show(res.data.get("items", []), res.data.get("total_count", 0), True)
 
 		def one(number):
 			"""One page of results: Result(data={"items", "total", "more"})."""
@@ -1003,6 +1206,8 @@ class SearchDialog(AccessibleDialog):
 		def work():
 			items, total, number = [], None, 1
 			while True:
+				if not current():
+					return None  # a newer search replaced this one, or the window was closed
 				res = one(number)
 				if not res.ok or not isinstance(res.data, dict):
 					if items:
@@ -1014,6 +1219,8 @@ class SearchDialog(AccessibleDialog):
 					total = res.data["total"]
 				if not got or not res.data["more"] or len(items) >= SEARCH_MAX_RESULTS:
 					break
+				# More pages to come: show what there is now.
+				wx.CallAfter(show, list(items), total if total is not None else len(items), False)
 				number += 1
 			items = items[:SEARCH_MAX_RESULTS]
 			return Result(200, {"items": items, "total_count": total if total is not None else len(items)}, {})
@@ -1056,8 +1263,8 @@ def gist_label(g):
 	files = list((g.get("files") or {}).keys())
 	title = g.get("description") or (files[0] if files else _("Untitled"))
 	count = len(files)
-	return _("{title}, {count} files, {visibility}, updated {date}").format(
-		title=title, count=count, visibility=_("public") if g.get("public") else _("secret"),
+	return _("{title}, {files}, {visibility}, updated {date}").format(
+		title=title, files=count_text("files", count), visibility=_("public") if g.get("public") else _("secret"),
 		date=format_date(g.get("updated_at")),
 	)
 
@@ -1136,7 +1343,7 @@ def show_gists(parent):
 		def done(res):
 			if res.ok:
 				copy_to_clipboard(res.data.get("html_url", ""), _("Gist created. Link copied to the clipboard."))
-				dlg.load(1)
+				dlg.reload()
 			else:
 				ui.message(_("Could not create the gist.") + " " + res.message)
 
@@ -1183,7 +1390,7 @@ def show_gists(parent):
 		dlg.run(lambda: fetch_full_gist(g["id"]), loaded)
 
 	def delete(dlg, g):
-		if not confirm_typed(dlg, _("Delete Gist"), _("This permanently deletes the gist."), "DELETE"):
+		if not confirm_danger(dlg, _("Delete Gist"), _("This permanently deletes the gist.")):
 			ui.message(_("Deletion cancelled."))
 			return
 
@@ -1215,20 +1422,26 @@ def show_gists(parent):
 # ----------------------------------------------------------------------
 
 def describe(resources):
-	"""Readable lines from the /rate_limit 'resources' mapping."""
+	"""Readable lines from the /rate_limit 'resources' mapping: the well-known kinds first, then the rest."""
 	names = {
 		"core": _("General requests"), "search": _("Searches"), "code_search": _("Code searches"),
-		"graphql": _("GraphQL"), "actions_runner_registration": _("Actions"),
+		"graphql": _("GraphQL"), "actions_runner_registration": _("Actions runner registration"),
+		"integration_manifest": _("App manifests"), "source_import": _("Source imports"),
+		"code_scanning_upload": _("Code scanning uploads"), "dependency_snapshots": _("Dependency snapshots"),
+		"scim": _("SCIM"), "audit_log": _("Audit log"),
 	}
+	order = [k for k in names if k in resources] + sorted(k for k in resources if k not in names)
 	lines = []
 	now = time.time()
-	for key, label in names.items():
-		item = resources.get(key)
-		if not item:
-			continue
+	for key in order:
+		item = resources.get(key) or {}
 		minutes = max(0, int((item.get("reset", now) - now) // 60))
-		lines.append(_("{label}: {remaining} of {limit} left. Resets in {minutes} minutes.").format(
-			label=label, remaining=item.get("remaining", 0), limit=item.get("limit", 0), minutes=minutes
+		lines.append(ngettext(
+			"{label}: {remaining} of {limit} left. Resets in {minutes} minute.",
+			"{label}: {remaining} of {limit} left. Resets in {minutes} minutes.", minutes,
+		).format(
+			label=names.get(key, key.replace("_", " ")), remaining=item.get("remaining", 0),
+			limit=item.get("limit", 0), minutes=minutes,
 		))
 	return lines
 
@@ -1242,7 +1455,6 @@ def show_status(parent):
 		return Result(200, (res.data, user.data if user.ok else None), {})
 
 	def done(res):
-		from .core import say
 		if not res.ok:
 			say(_("Could not check GitHub.") + " " + res.message)
 			return
@@ -1251,7 +1463,7 @@ def show_status(parent):
 		lines += describe((data or {}).get("resources", {}))
 		show_modal(TextViewDialog(parent, _("GitHub Status"), "\n".join(lines), label=_("&Status:")))
 
-	run_async(work, done)
+	run_from(parent, work, done)
 
 
 # ----------------------------------------------------------------------
@@ -1259,9 +1471,14 @@ def show_status(parent):
 # ----------------------------------------------------------------------
 
 def user_guide_path():
-	"""The user guide, doc/en/readme.html inside the add-on. It opens in the browser."""
+	"""The user guide in NVDA's language (doc/<language>/readme.html), else the English one. It opens in the browser."""
 	path = addonHandler.getCodeAddon().path
-	for language in ("en",):
+	try:
+		import languageHandler
+		language = languageHandler.getLanguage()
+	except Exception:
+		language = "en"
+	for language in (language, language.split("_")[0], "en"):
 		candidate = os.path.join(path, "doc", language, "readme.html")
 		if os.path.isfile(candidate):
 			return candidate
@@ -1285,7 +1502,7 @@ class MainMenuDialog(AccessibleDialog):
 			(_("My Profile"), needs_token(self, lambda: show_profile(self))),
 			(_("My Work"), needs_token(self, lambda: show_my_work(self))),
 			(_("My Repositories"), needs_token(self, lambda: show_my_repos(self))),
-			(_("GitHub Settings"), needs_token(self, lambda: show_settings_menu(self))),
+			(_("GitHub Account Settings"), needs_token(self, lambda: show_settings_menu(self))),
 			(_("Search Public Repositories"), lambda: show_explore(self)),
 			(_("Open Link or Repository"), self.open_by_name),
 			(_("Notifications"), needs_token(self, lambda: show_notifications(self))),
@@ -1312,18 +1529,26 @@ class MainMenuDialog(AccessibleDialog):
 			self.entries[index][1]()
 
 	def open_by_name(self):
-		clip = get_clipboard_text().strip()
-		start = clip if clip and len(clip) < 300 and parse_github_link(clip) else ""
-		text = prompt_text(self, _("Open Link or Repository"), _("Repository &name (owner/repo), user name, or GitHub link:"), start)
-		if not text:
-			return
-		if not open_link(self, text.strip()):
-			if text.strip() and "/" not in text and " " not in text.strip():
-				from .profile import show_user
-				show_user(self, text.strip().lstrip("@"))
-			else:
-				ui.message(_("Enter a repository as owner/repo, for example nvaccess/nvda, or paste a GitHub link."))
+		open_by_name(self)
+
+
+def open_by_name(parent):
+	"""Ask for owner/repo, a user name or a GitHub link (the clipboard fills it in), then open it."""
+	clip = get_clipboard_text().strip()
+	start = clip if clip and len(clip) < 300 and parse_github_link(clip) else ""
+	text = prompt_text(parent, _("Open Link or Repository"), _("Repository &name (owner/repo), user name, or GitHub link:"), start)
+	if not text:
+		return
+	if not open_link(parent, text.strip()):
+		if text.strip() and "/" not in text and " " not in text.strip():
+			from .profile import show_user
+			show_user(parent, text.strip().lstrip("@"))
+		else:
+			ui.message(_("Enter a repository as owner/repo, for example nvaccess/nvda, or paste a GitHub link."))
 
 
 def open_main_dialog():
+	if has_token():
+		from .profile import warn_if_token_expiring
+		run_async(warn_if_token_expiring)  # says so, once per session, when the token stops working within a week
 	show_modal(MainMenuDialog(gui.mainFrame))
